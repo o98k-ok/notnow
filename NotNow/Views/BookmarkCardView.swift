@@ -1,8 +1,38 @@
 import SwiftUI
 
+/// In-memory cache for decoded cover images to avoid repeated main-thread decode during scroll.
+private enum CoverImageCache {
+    private static let maxEntries = 80
+    private static var cache: [UUID: NSImage] = [:]
+    private static var order: [UUID] = []
+    private static let lock = NSLock()
+
+    static func image(for id: UUID, data: Data?) -> NSImage? {
+        guard let data else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached = cache[id] { return cached }
+        return nil
+    }
+
+    static func set(_ image: NSImage?, for id: UUID) {
+        lock.lock()
+        if cache[id] != nil { lock.unlock(); return }
+        while order.count >= maxEntries, let first = order.first {
+            order.removeFirst()
+            cache[first] = nil
+        }
+        cache[id] = image
+        order.append(id)
+        lock.unlock()
+    }
+}
+
 struct BookmarkCardView: View {
     let bookmark: Bookmark
     @State private var isHovered = false
+    /// Decoded cover image; loaded async to avoid blocking main thread during scroll.
+    @State private var displayCover: NSImage?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -17,15 +47,38 @@ struct BookmarkCardView: View {
         .scaleEffect(isHovered ? 1.02 : 1)
         .animation(.easeOut(duration: 0.2), value: isHovered)
         .onHover { isHovered = $0 }
+        .task(id: bookmark.updatedAt) {
+            await loadCoverIfNeeded()
+        }
+    }
+
+    private func loadCoverIfNeeded() async {
+        guard let data = bookmark.coverData else {
+            await MainActor.run { displayCover = nil }
+            return
+        }
+        if let cached = CoverImageCache.image(for: bookmark.id, data: data) {
+            await MainActor.run { displayCover = cached }
+            return
+        }
+        let decoded = await Task.detached(priority: .userInitiated) {
+            NSImage(data: data)
+        }.value
+        await MainActor.run {
+            if let decoded {
+                CoverImageCache.set(decoded, for: bookmark.id)
+            }
+            displayCover = decoded
+        }
     }
 
     // MARK: - Card With Cover
 
     private var coverCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Cover image with overlay
+            // Cover image with overlay (use pre-decoded displayCover, never decode in body)
             ZStack(alignment: .bottomLeading) {
-                if let data = bookmark.coverData, let img = NSImage(data: data) {
+                if let img = displayCover {
                     Image(nsImage: img)
                         .resizable()
                         .aspectRatio(contentMode: .fill)

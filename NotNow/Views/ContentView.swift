@@ -27,6 +27,7 @@ struct ContentView: View {
     @State private var showImportSheet = false
     @State private var selectedImportSource: ImportSource = .chrome
     @State private var githubStarsInput = ""
+    @State private var notNowZipURL: URL?
     @State private var isBatchMode = false
     @State private var selectedBookmarkIDs: Set<UUID> = []
     @State private var hoverPreviewBookmark: Bookmark?
@@ -34,6 +35,10 @@ struct ContentView: View {
     @State private var hoverPreviewLocation: CGPoint?
     @State private var showSettings = false
     @FocusState private var isSearchFocused: Bool
+    /// 分页：首屏 20 条，滚动到剩余不足时提前拉取下一页，保证连贯
+    private static let pageSize = 20
+    private static let loadMoreTriggerThreshold = 3
+    @State private var displayedCount = ContentView.pageSize
 
     private var filteredBookmarks: [Bookmark] {
         bookmarks.filter { bm in
@@ -89,6 +94,7 @@ struct ContentView: View {
             ImportBookmarksSheet(
                 selectedSource: $selectedImportSource,
                 githubStarsInput: $githubStarsInput,
+                notNowZipURL: $notNowZipURL,
                 isImporting: isImporting,
                 onCancel: { showImportSheet = false },
                 onImport: { source in
@@ -98,7 +104,7 @@ struct ContentView: View {
             .preferredColorScheme(.dark)
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView()
+            SettingsView(bookmarks: bookmarks, categories: categories)
                 .preferredColorScheme(.dark)
         }
         .onReceive(NotificationCenter.default.publisher(for: .addBookmark)) { _ in
@@ -112,6 +118,12 @@ struct ContentView: View {
         }
         .onChange(of: showCategorySheet) {
             if !showCategorySheet { editingCategory = nil }
+        }
+        .onChange(of: selection) {
+            displayedCount = ContentView.pageSize
+        }
+        .onChange(of: searchText) {
+            displayedCount = ContentView.pageSize
         }
         .alert("导入结果", isPresented: $showImportAlert) {
             Button("好的", role: .cancel) {}
@@ -476,12 +488,31 @@ struct ContentView: View {
                     emptyState
                 } else {
                     let contentWidth = max(proxy.size.width - 44, 1)
-                    MasonryLayout(columns: columnCount, spacing: 14) {
-                        ForEach(filteredBookmarks) { bm in
-                            bookmarkCell(for: bm)
+                    let visibleBookmarks = Array(filteredBookmarks.prefix(displayedCount))
+                    let totalCount = filteredBookmarks.count
+                    VStack(alignment: .leading, spacing: 0) {
+                        MasonryLayout(columns: columnCount, spacing: 14) {
+                            ForEach(Array(visibleBookmarks.enumerated()), id: \.element.id) { index, bm in
+                                bookmarkCell(for: bm)
+                                    .onAppear {
+                                        if index >= displayedCount - ContentView.loadMoreTriggerThreshold,
+                                           displayedCount < totalCount {
+                                            displayedCount = min(displayedCount + ContentView.pageSize, totalCount)
+                                        }
+                                    }
+                            }
+                        }
+                        .frame(width: contentWidth, alignment: .topLeading)
+
+                        // 底部哨兵：兜底，滚到最底时再拉一页
+                        if displayedCount < totalCount {
+                            Color.clear
+                                .frame(height: 20)
+                                .onAppear {
+                                    displayedCount = min(displayedCount + ContentView.pageSize, totalCount)
+                                }
                         }
                     }
-                    .frame(width: contentWidth, alignment: .topLeading)
                     .padding(.horizontal, 22)
                     .padding(.bottom, 22)
                 }
@@ -686,6 +717,40 @@ struct ContentView: View {
         isImporting = true
 
         Task {
+            switch source {
+            case .notNow:
+                guard let zipURL = notNowZipURL else {
+                    await MainActor.run {
+                        importAlertMessage = "请先选择 NotNow 备份文件（.zip）。"
+                        showImportAlert = true
+                        isImporting = false
+                    }
+                    return
+                }
+                let result = await NotNowBackupService.import(from: zipURL, into: modelContext)
+                await MainActor.run {
+                    switch result {
+                    case .success(let stats):
+                        importAlertMessage = "已恢复 \(stats.bookmarksCreated) 条书签、\(stats.categoriesCreated) 个分类。\(stats.configRestored ? "配置已恢复。" : "")"
+                        showImportAlert = true
+                    case .failure(let err):
+                        let msg: String
+                        if case .readFailed(let s) = err { msg = s }
+                        else if case .writeFailed(let s) = err { msg = s }
+                        else if case .invalidZip = err { msg = "无效的 zip 或非 NotNow 备份。" }
+                        else if case .missingCategories = err { msg = "备份缺少 categories.json。" }
+                        else if case .missingBookmarks = err { msg = "备份缺少 bookmarks.json。" }
+                        else { msg = String(describing: err) }
+                        importAlertMessage = "导入失败：\(msg)"
+                        showImportAlert = true
+                    }
+                    isImporting = false
+                }
+                return
+            case .chrome, .githubStars:
+                break
+            }
+
             let entries: [ImportEntry]
             switch source {
             case .chrome:
@@ -713,6 +778,8 @@ struct ContentView: View {
                     }
                     return
                 }
+            case .notNow:
+                return
             }
 
             let selectedCategory: Category? = {
@@ -1014,6 +1081,7 @@ private struct HoverPreviewCard: View {
 private enum ImportSource: String, CaseIterable, Identifiable {
     case chrome
     case githubStars
+    case notNow
 
     var id: String { rawValue }
 
@@ -1021,6 +1089,7 @@ private enum ImportSource: String, CaseIterable, Identifiable {
         switch self {
         case .chrome: return "Chrome"
         case .githubStars: return "GitHub Stars"
+        case .notNow: return "NotNow 备份"
         }
     }
 
@@ -1030,6 +1099,8 @@ private enum ImportSource: String, CaseIterable, Identifiable {
             return "从 Chrome 浏览器书签中导入数据。"
         case .githubStars:
             return "从 GitHub 星标仓库列表导入，需提供用户名或 profile 链接。"
+        case .notNow:
+            return "从本机 NotNow 导出的 .zip 备份恢复书签、分类与配置。"
         }
     }
 
@@ -1037,6 +1108,7 @@ private enum ImportSource: String, CaseIterable, Identifiable {
         switch self {
         case .chrome: return "globe"
         case .githubStars: return "star.circle"
+        case .notNow: return "doc.zipper"
         }
     }
 }
@@ -1049,6 +1121,7 @@ private struct ImportEntry {
 private struct ImportBookmarksSheet: View {
     @Binding var selectedSource: ImportSource
     @Binding var githubStarsInput: String
+    @Binding var notNowZipURL: URL?
     let isImporting: Bool
     let onCancel: () -> Void
     let onImport: (ImportSource) -> Void
@@ -1143,6 +1216,52 @@ private struct ImportBookmarksSheet: View {
                     }
                 }
 
+                if selectedSource == .notNow {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("备份文件 (.zip)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.textTertiary)
+                            .textCase(.uppercase)
+                        HStack(spacing: 8) {
+                            Button {
+                                let panel = NSOpenPanel()
+                                panel.allowedContentTypes = [.zip]
+                                panel.allowsMultipleSelection = false
+                                if panel.runModal() == .OK, let url = panel.url {
+                                    notNowZipURL = url
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "doc.zipper")
+                                    Text(notNowZipURL == nil ? "选择备份文件" : notNowZipURL!.lastPathComponent)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                .font(.subheadline)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(AppTheme.bgInput)
+                                .foregroundStyle(AppTheme.textPrimary)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                            if notNowZipURL != nil {
+                                Button {
+                                    notNowZipURL = nil
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.subheadline)
+                                        .foregroundStyle(AppTheme.textTertiary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        Text("由本应用的「导出数据与配置」生成的 zip 包。")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.textTertiary)
+                    }
+                }
+
                 Spacer()
             }
             .padding(24)
@@ -1171,7 +1290,7 @@ private struct ImportBookmarksSheet: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.defaultAction)
-                .disabled(isImporting)
+                .disabled(isImporting || (selectedSource == .notNow && notNowZipURL == nil))
             }
             .padding(20)
             .background(AppTheme.bgSecondary.opacity(0.5))
@@ -1345,6 +1464,8 @@ private enum GitHubStarsImporter {
 
 private struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    let bookmarks: [Bookmark]
+    let categories: [Category]
 
     @AppStorage("accentTheme") private var accentThemeName = "purple"
 
@@ -1356,6 +1477,8 @@ private struct SettingsView: View {
     @State private var aiTesting = false
     @State private var aiTestMessage = ""
     @State private var aiTestLog = ""
+    @State private var isExporting = false
+    @State private var exportError: String?
 
     private var currentTheme: AccentTheme {
         AccentTheme(rawValue: accentThemeName) ?? .purple
@@ -1379,6 +1502,79 @@ private struct SettingsView: View {
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("数据")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.textTertiary)
+                    .textCase(.uppercase)
+
+                Button {
+                    isExporting = true
+                    exportError = nil
+                    let config = NotNowExportConfig(
+                        accentTheme: accentThemeName,
+                        aiEnabled: aiEnabled,
+                        aiAPIURL: aiAPIURL,
+                        aiAPIKey: aiAPIKey,
+                        aiModel: aiModel
+                    )
+                    Task {
+                        let result = await NotNowBackupService.export(
+                            bookmarks: bookmarks,
+                            categories: categories,
+                            config: config
+                        )
+                        await MainActor.run {
+                            isExporting = false
+                            switch result {
+                            case .success(let zipURL):
+                                let panel = NSSavePanel()
+                                panel.nameFieldStringValue = zipURL.lastPathComponent
+                                panel.allowedContentTypes = [.zip]
+                                panel.canCreateDirectories = true
+                                if panel.runModal() == .OK, let dest = panel.url {
+                                    do {
+                                        if FileManager.default.fileExists(atPath: dest.path) {
+                                            try FileManager.default.removeItem(at: dest)
+                                        }
+                                        try FileManager.default.copyItem(at: zipURL, to: dest)
+                                    } catch {
+                                        exportError = "保存失败：\(error.localizedDescription)"
+                                    }
+                                }
+                            case .failure(let err):
+                                let msg: String
+                                if case .writeFailed(let s) = err { msg = s }
+                                else { msg = String(describing: err) }
+                                exportError = msg
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        if isExporting {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                        Text("导出数据与配置")
+                    }
+                    .ghostButtonStyle()
+                }
+                .buttonStyle(.plain)
+                .disabled(isExporting)
+
+                if let exportError {
+                    Text(exportError)
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.accentPink)
+                }
+
+                Text("导出为 zip，含书签、分类、封面及当前配置（主题与 AI 设置）。")
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.textTertiary)
             }
 
             VStack(alignment: .leading, spacing: 12) {

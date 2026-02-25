@@ -18,6 +18,7 @@
 		99CC69ECACD977CC5852A809 /* BookmarkDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D57C4911969A1DF7403C5D5 /* BookmarkDetailSheet.swift */; };
 		99EAC6973D2FBE20CC3DC0A2 /* Bookmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59D07A398CBFAFBDE47E4105 /* Bookmark.swift */; };
 		A8A6016248DC0DF939ED050A /* MetadataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E5A2BD4FBD04CEC1CECE324 /* MetadataService.swift */; };
+		B7D2E1F93A4C5B6E8D9E0F1A /* NotNowBackupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8E3D4A5B6F7E2D1C0A9B8E7 /* NotNowBackupService.swift */; };
 		EFC51328721A94F2D59186C8 /* OpenService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 691FF261CFE1DD8AFE42BD70 /* OpenService.swift */; };
 		F2AA9FFA7C46FB04644CAE52 /* BookmarkCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B39BF9801D0262995AA7CE48 /* BookmarkCardView.swift */; };
 /* End PBXBuildFile section */
@@ -33,6 +34,7 @@
 		640FF47D4FDFB617276DDE5C /* NotNowApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotNowApp.swift; sourceTree = "<group>"; };
 		65334B3C3E15B3F31A229FC6 /* NotNow.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NotNow.entitlements; sourceTree = "<group>"; };
 		691FF261CFE1DD8AFE42BD70 /* OpenService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenService.swift; sourceTree = "<group>"; };
+		C8E3D4A5B6F7E2D1C0A9B8E7 /* NotNowBackupService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotNowBackupService.swift; sourceTree = "<group>"; };
 		6B0B8A3537F299D8B7651CA2 /* CategorySheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategorySheet.swift; sourceTree = "<group>"; };
 		8A63CF8D455A8A6163BBD075 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A9E43F5C0C52A2E19ADAA632 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
@@ -75,6 +77,7 @@
 			isa = PBXGroup;
 			children = (
 				0E5A2BD4FBD04CEC1CECE324 /* MetadataService.swift */,
+				C8E3D4A5B6F7E2D1C0A9B8E7 /* NotNowBackupService.swift */,
 				691FF261CFE1DD8AFE42BD70 /* OpenService.swift */,
 			);
 			path = Services;
@@ -183,6 +186,7 @@
 				2132387EB6815A4F100BB78B /* CategorySheet.swift in Sources */,
 				8FC6C81E2A402F43A530FF33 /* ContentView.swift in Sources */,
 				A8A6016248DC0DF939ED050A /* MetadataService.swift in Sources */,
+				B7D2E1F93A4C5B6E8D9E0F1A /* NotNowBackupService.swift in Sources */,
 				4246381273FA07AAA0B94F58 /* NotNowApp.swift in Sources */,
 				EFC51328721A94F2D59186C8 /* OpenService.swift in Sources */,
 				8E1E2724304469F27D7FF14F /* OpenWithSheet.swift in Sources */,
