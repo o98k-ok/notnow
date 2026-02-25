@@ -1,5 +1,30 @@
 import SwiftUI
 
+/// 限制封面解码并发数，避免同时解码过多导致卡顿
+private actor CoverDecodeLimiter {
+    static let shared = CoverDecodeLimiter()
+    private var active = 0
+    private let maxConcurrent = 4
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if active < maxConcurrent {
+            active += 1
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+        active += 1
+    }
+
+    func release() {
+        active -= 1
+        if let cont = waiters.first {
+            waiters.removeFirst()
+            cont.resume()
+        }
+    }
+}
+
 /// In-memory cache for decoded cover images to avoid repeated main-thread decode during scroll.
 private enum CoverImageCache {
     private static let maxEntries = 80
@@ -61,6 +86,8 @@ struct BookmarkCardView: View {
             await MainActor.run { displayCover = cached }
             return
         }
+        await CoverDecodeLimiter.shared.acquire()
+        defer { Task { await CoverDecodeLimiter.shared.release() } }
         let decoded = await Task.detached(priority: .userInitiated) {
             NSImage(data: data)
         }.value

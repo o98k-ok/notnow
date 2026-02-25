@@ -39,6 +39,7 @@ struct ContentView: View {
     private static let pageSize = 20
     private static let loadMoreTriggerThreshold = 3
     @State private var displayedCount = ContentView.pageSize
+    @State private var isLoadingMore = false
 
     private var filteredBookmarks: [Bookmark] {
         bookmarks.filter { bm in
@@ -481,6 +482,16 @@ struct ContentView: View {
 
     // MARK: - Grid
 
+    private func loadMore(totalCount: Int) {
+        guard !isLoadingMore else { return }
+        isLoadingMore = true
+        displayedCount = min(displayedCount + ContentView.pageSize, totalCount)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            isLoadingMore = false
+        }
+    }
+
     private var bookmarkGrid: some View {
         GeometryReader { proxy in
             ScrollView {
@@ -490,14 +501,15 @@ struct ContentView: View {
                     let contentWidth = max(proxy.size.width - 44, 1)
                     let visibleBookmarks = Array(filteredBookmarks.prefix(displayedCount))
                     let totalCount = filteredBookmarks.count
+                    let currentDisplayed = visibleBookmarks.count
                     VStack(alignment: .leading, spacing: 0) {
                         MasonryLayout(columns: columnCount, spacing: 14) {
                             ForEach(Array(visibleBookmarks.enumerated()), id: \.element.id) { index, bm in
                                 bookmarkCell(for: bm)
                                     .onAppear {
-                                        if index >= displayedCount - ContentView.loadMoreTriggerThreshold,
-                                           displayedCount < totalCount {
-                                            displayedCount = min(displayedCount + ContentView.pageSize, totalCount)
+                                        if index >= currentDisplayed - ContentView.loadMoreTriggerThreshold,
+                                           currentDisplayed < totalCount {
+                                            loadMore(totalCount: totalCount)
                                         }
                                     }
                             }
@@ -509,8 +521,18 @@ struct ContentView: View {
                             Color.clear
                                 .frame(height: 20)
                                 .onAppear {
-                                    displayedCount = min(displayedCount + ContentView.pageSize, totalCount)
+                                    loadMore(totalCount: totalCount)
                                 }
+                        }
+
+                        // 加载更多时显示进度条
+                        if isLoadingMore {
+                            ProgressView()
+                                .progressViewStyle(.linear)
+                                .frame(height: 3)
+                                .tint(currentTheme.color)
+                                .padding(.top, 8)
+                                .padding(.horizontal, 22)
                         }
                     }
                     .padding(.horizontal, 22)
