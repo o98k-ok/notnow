@@ -1,0 +1,413 @@
+import SwiftData
+import SwiftUI
+import UniformTypeIdentifiers
+
+struct AddBookmarkSheet: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+    @Query(sort: \Category.sortOrder) private var categories: [Category]
+
+    @AppStorage("ai.enabled") private var aiEnabled = false
+
+    @State private var url = ""
+    @State private var title = ""
+    @State private var desc = ""
+    @State private var tagsText = ""
+    @State private var notes = ""
+    @State private var coverData: Data?
+    @State private var coverURL: String?
+    @State private var isFetching = false
+    @State private var selectedCategoryID: UUID?
+    @State private var metadataTask: Task<Void, Never>?
+    @State private var coverTask: Task<Void, Never>?
+    @State private var manualCoverOverride = false
+    @State private var aiRefined = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            sheetHeader(title: "添加书签", icon: "plus.circle.fill") {
+                dismiss()
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // URL Input
+                    VStack(alignment: .leading, spacing: 6) {
+                        fieldLabel("链接")
+                        HStack(spacing: 8) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "link")
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.textTertiary)
+                                TextField("https://...", text: $url)
+                                    .textFieldStyle(.plain)
+                                    .font(.subheadline)
+                                    .onSubmit { fetchMetadata() }
+                            }
+                            .darkTextField()
+
+                            Button { fetchMetadata() } label: {
+                                Group {
+                                    if isFetching {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                    } else {
+                                        Image(systemName: "arrow.down.circle.fill")
+                                    }
+                                }
+                                .frame(width: 36, height: 36)
+                                .background(AppTheme.accent.opacity(0.15))
+                                .foregroundStyle(AppTheme.accent)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(url.isEmpty || isFetching)
+                        }
+                    }
+
+                    // Cover Section
+                    coverSection
+
+                    // Title
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) {
+                            fieldLabel("标题")
+                            if aiEnabled {
+                                if aiRefined {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "sparkles")
+                                            .font(.system(size: 10, weight: .semibold))
+                                        Text("AI")
+                                            .font(.system(size: 10, weight: .semibold))
+                                    }
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 3)
+                                    .foregroundStyle(AppTheme.accent)
+                                    .background(AppTheme.accent.opacity(0.16))
+                                    .clipShape(Capsule())
+                                } else {
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(AppTheme.textTertiary)
+                                }
+                            }
+                        }
+                        TextField("输入标题", text: $title)
+                            .darkTextField()
+                            .font(.subheadline)
+                    }
+
+                    // Description
+                    VStack(alignment: .leading, spacing: 6) {
+                        fieldLabel("描述")
+                        TextField("输入描述", text: $desc)
+                            .darkTextField()
+                            .font(.subheadline)
+                    }
+
+                    // Category
+                    VStack(alignment: .leading, spacing: 6) {
+                        fieldLabel("分类")
+                        Picker("", selection: $selectedCategoryID) {
+                            Text("无分类").tag(nil as UUID?)
+                            ForEach(categories) { cat in
+                                Label(cat.name, systemImage: cat.icon).tag(cat.id as UUID?)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+
+                    // Tags
+                    VStack(alignment: .leading, spacing: 6) {
+                        fieldLabel("标签")
+                        HStack(spacing: 8) {
+                            Image(systemName: "tag")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.textTertiary)
+                            TextField("逗号分隔, 例如: swift, ios, 教程", text: $tagsText)
+                                .textFieldStyle(.plain)
+                                .font(.subheadline)
+                        }
+                        .darkTextField()
+                    }
+
+                    // Notes
+                    VStack(alignment: .leading, spacing: 6) {
+                        fieldLabel("备注")
+                        TextEditor(text: $notes)
+                            .font(.subheadline)
+                            .scrollContentBackground(.hidden)
+                            .padding(10)
+                            .frame(minHeight: 60)
+                            .background(AppTheme.bgInput)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                            )
+                    }
+                }
+                .padding(24)
+            }
+
+            // Bottom actions
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }
+                    .ghostButtonStyle()
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.cancelAction)
+                Button("保存") { save() }
+                    .accentButtonStyle()
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(url.isEmpty)
+                    .opacity(url.isEmpty ? 0.5 : 1)
+            }
+            .padding(20)
+            .background(AppTheme.bgSecondary.opacity(0.5))
+        }
+        .frame(minWidth: 540, minHeight: 520)
+        .background(AppTheme.bgPrimary)
+        .onAppear { pasteFromClipboard() }
+        .onDisappear {
+            metadataTask?.cancel()
+            coverTask?.cancel()
+        }
+    }
+
+    // MARK: - Cover Section
+
+    private var coverSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                fieldLabel("封面")
+                Spacer()
+                if coverData != nil {
+                    Button { removeCoverManually() } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "xmark")
+                            Text("移除")
+                        }
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.accentPink)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            if let coverData, let image = NSImage(data: coverData) {
+                // Cover preview
+                ZStack(alignment: .bottomTrailing) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(maxHeight: 140)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                        )
+
+                    Button { pickImage() } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.caption)
+                            .foregroundStyle(.white)
+                            .padding(6)
+                            .background(.ultraThinMaterial)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(8)
+                }
+            } else {
+                // Upload area
+                Button { pickImage() } label: {
+                    VStack(spacing: 8) {
+                        Image(systemName: "photo.badge.plus")
+                            .font(.title3)
+                            .foregroundStyle(AppTheme.textTertiary)
+                        Text("点击选择封面图片")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.textTertiary)
+                        Text("自动获取链接时会尝试抓取 OG 封面")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.textTertiary.opacity(0.6))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 100)
+                    .background(AppTheme.bgInput)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(AppTheme.borderSubtle, style: StrokeStyle(lineWidth: 1, dash: [6]))
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // MARK: - Actions
+
+    private func fetchMetadata() {
+        var normalized = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !normalized.hasPrefix("http://"), !normalized.hasPrefix("https://") {
+            normalized = "https://\(normalized)"
+            url = normalized
+        }
+        metadataTask?.cancel()
+        coverTask?.cancel()
+        manualCoverOverride = false
+        aiRefined = false
+        NSLog("[Add] fetchMetadata: %@", normalized)
+        isFetching = true
+        metadataTask = Task {
+            let metadata = await MetadataService.shared.fetch(from: normalized, fetchImage: false)
+            if Task.isCancelled { return }
+            NSLog("[Add] metadata result: title=%@, image=%d bytes",
+                  metadata.title ?? "nil", metadata.imageData?.count ?? 0)
+            await MainActor.run {
+                if Task.isCancelled { return }
+                if title.isEmpty, let t = metadata.title { title = t }
+                if desc.isEmpty, let d = metadata.description { desc = d }
+                coverURL = metadata.imageURL
+                isFetching = false
+            }
+            // AI refinement (optional)
+            if aiEnabled {
+                let original: (String, String) = await MainActor.run { (title, desc) }
+                if let ai = await AIService.shared.refineTitleAndDescription(
+                    for: normalized,
+                    originalTitle: original.0,
+                    originalDesc: original.1
+                ) {
+                    if Task.isCancelled { return }
+                    await MainActor.run {
+                        if Task.isCancelled { return }
+                        var didChange = false
+                        if let t = ai.title, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            title = t
+                            didChange = true
+                        }
+                        if let d = ai.desc, !d.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            desc = d
+                            didChange = true
+                        }
+                        if let tagList = ai.tags, !tagList.isEmpty {
+                            let normalizedTags = tagList
+                                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                                .filter { !$0.isEmpty }
+                            if !normalizedTags.isEmpty {
+                                let existing =
+                                    tagsText.split(separator: ",")
+                                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                                    .filter { !$0.isEmpty }
+                                var seen = Set<String>()
+                                let combined = (existing + normalizedTags).filter { tag in
+                                    let lower = tag.lowercased()
+                                    if seen.contains(lower) { return false }
+                                    seen.insert(lower)
+                                    return true
+                                }
+                                tagsText = combined.joined(separator: ", ")
+                            }
+                        }
+                        if didChange {
+                            aiRefined = true
+                        }
+                    }
+                }
+            }
+            if let imgURL = metadata.imageURL, !imgURL.isEmpty {
+                coverTask = Task {
+                    let imgData = await MetadataService.shared.fetchImageData(from: imgURL)
+                    if Task.isCancelled { return }
+                    await MainActor.run {
+                        if Task.isCancelled { return }
+                        if !manualCoverOverride, url == normalized, coverData == nil, let imgData {
+                            coverData = imgData
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func save() {
+        let tags =
+            tagsText.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let bookmark = Bookmark(
+            url: url, title: title, desc: desc,
+            coverURL: coverURL, coverData: coverData,
+            tags: tags, notes: notes
+        )
+        bookmark.category = categories.first { $0.id == selectedCategoryID }
+        modelContext.insert(bookmark)
+        dismiss()
+    }
+
+    private func pasteFromClipboard() {
+        guard let raw = NSPasteboard.general.string(forType: .string) else { return }
+        let content = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsed = URL(string: content),
+            parsed.scheme == "http" || parsed.scheme == "https"
+        else { return }
+        url = content
+        fetchMetadata()
+    }
+
+    private func pickImage() {
+        coverTask?.cancel()
+        manualCoverOverride = true
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let fileURL = panel.url {
+            coverData = try? Data(contentsOf: fileURL)
+            coverURL = nil
+        }
+    }
+
+    private func removeCoverManually() {
+        coverTask?.cancel()
+        manualCoverOverride = true
+        coverData = nil
+        coverURL = nil
+    }
+}
+
+// MARK: - Shared Components
+
+func sheetHeader(title: String, icon: String, onCancel: @escaping () -> Void) -> some View {
+    HStack(spacing: 10) {
+        Image(systemName: icon)
+            .font(.title3)
+            .foregroundStyle(AppTheme.accentGradient)
+        Text(title)
+            .font(.title3.weight(.bold))
+            .foregroundStyle(AppTheme.textPrimary)
+        Spacer()
+        Button { onCancel() } label: {
+            Image(systemName: "xmark")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(AppTheme.textTertiary)
+                .frame(width: 28, height: 28)
+                .background(AppTheme.bgElevated)
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
+    }
+    .padding(20)
+    .background(AppTheme.bgSecondary.opacity(0.5))
+}
+
+func fieldLabel(_ text: String) -> some View {
+    Text(text)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(AppTheme.textSecondary)
+        .textCase(.uppercase)
+}

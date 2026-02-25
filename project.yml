@@ -1,0 +1,27 @@
+name: NotNow
+options:
+  bundleIdPrefix: com.notnow
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+
+targets:
+  NotNow:
+    type: application
+    platform: macOS
+    sources:
+      - NotNow
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.notnow.app
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "5.9"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        CODE_SIGN_ENTITLEMENTS: NotNow/NotNow.entitlements
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+    entitlements:
+      path: NotNow/NotNow.entitlements
