@@ -10,6 +10,7 @@ EXPORT_PATH="$ROOT_DIR/build/export"
 
 echo "==> Building scheme: ${SCHEME} (${CONFIGURATION})"
 
+# 清理构建产物，确保 App Icon 等资源会重新编译（避免旧 .icns 缓存）
 rm -rf "${DERIVED_DATA_PATH}" "${ARCHIVE_PATH}" "${EXPORT_PATH}"
 mkdir -p "${DERIVED_DATA_PATH}" "${EXPORT_PATH}"
 
