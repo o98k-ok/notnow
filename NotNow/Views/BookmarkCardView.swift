@@ -72,8 +72,13 @@ struct BookmarkCardView: View {
         .scaleEffect(isHovered ? 1.02 : 1)
         .animation(.easeOut(duration: 0.2), value: isHovered)
         .onHover { isHovered = $0 }
-        .task(id: bookmark.updatedAt) {
-            await loadCoverIfNeeded()
+        .onAppear {
+            guard bookmark.hasCover, displayCover == nil else { return }
+            Task { await loadCoverIfNeeded() }
+        }
+        .onChange(of: bookmark.updatedAt) {
+            if bookmark.hasCover { Task { await loadCoverIfNeeded() } }
+            else { displayCover = nil }
         }
     }
 
@@ -88,7 +93,7 @@ struct BookmarkCardView: View {
         }
         await CoverDecodeLimiter.shared.acquire()
         defer { Task { await CoverDecodeLimiter.shared.release() } }
-        let decoded = await Task.detached(priority: .userInitiated) {
+        let decoded = await Task.detached(priority: .utility) {
             NSImage(data: data)
         }.value
         await MainActor.run {

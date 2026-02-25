@@ -35,9 +35,8 @@ struct ContentView: View {
     @State private var hoverPreviewLocation: CGPoint?
     @State private var showSettings = false
     @FocusState private var isSearchFocused: Bool
-    /// 分页：首屏 20 条，滚动到剩余不足时提前拉取下一页，保证连贯
+    /// 分页：首屏条数，滚动到底或最后一格出现时加载下一页
     private static let pageSize = 20
-    private static let loadMoreTriggerThreshold = 3
     @State private var displayedCount = ContentView.pageSize
     @State private var isLoadingMore = false
 
@@ -273,6 +272,8 @@ struct ContentView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 8)
                     .fill(isActive ? accentColor.opacity(0.12) : .clear)
@@ -482,6 +483,21 @@ struct ContentView: View {
 
     // MARK: - Grid
 
+    /// 瀑布流列分配：按预估高度把书签分到多列，使各列高度尽量均衡，便于 LazyVStack 懒加载
+    private func splitIntoColumns(bookmarks: [Bookmark], columns: Int) -> [[Bookmark]] {
+        guard columns > 0, !bookmarks.isEmpty else { return bookmarks.isEmpty ? [] : [bookmarks] }
+        let spacing: CGFloat = 14
+        let estimatedHeight: (Bookmark) -> CGFloat = { $0.hasCover ? 250 : 140 }
+        var columnHeights = [CGFloat](repeating: 0, count: columns)
+        var result = [[Bookmark]](repeating: [], count: columns)
+        for bm in bookmarks {
+            let col = columnHeights.enumerated().min(by: { $0.element < $1.element })?.offset ?? 0
+            result[col].append(bm)
+            columnHeights[col] += estimatedHeight(bm) + spacing
+        }
+        return result
+    }
+
     private func loadMore(totalCount: Int) {
         guard !isLoadingMore else { return }
         isLoadingMore = true
@@ -494,52 +510,77 @@ struct ContentView: View {
 
     private var bookmarkGrid: some View {
         GeometryReader { proxy in
-            ScrollView {
-                if filteredBookmarks.isEmpty {
-                    emptyState
-                } else {
-                    let contentWidth = max(proxy.size.width - 44, 1)
-                    let visibleBookmarks = Array(filteredBookmarks.prefix(displayedCount))
-                    let totalCount = filteredBookmarks.count
-                    let currentDisplayed = visibleBookmarks.count
-                    VStack(alignment: .leading, spacing: 0) {
-                        MasonryLayout(columns: columnCount, spacing: 14) {
-                            ForEach(Array(visibleBookmarks.enumerated()), id: \.element.id) { index, bm in
-                                bookmarkCell(for: bm)
-                                    .onAppear {
-                                        if index >= currentDisplayed - ContentView.loadMoreTriggerThreshold,
-                                           currentDisplayed < totalCount {
-                                            loadMore(totalCount: totalCount)
+            VStack(spacing: 0) {
+                ScrollView {
+                    if filteredBookmarks.isEmpty {
+                        emptyState
+                    } else {
+                        let contentWidth = max(proxy.size.width - 44, 1)
+                        let visibleBookmarks = Array(filteredBookmarks.prefix(displayedCount))
+                        let totalCount = filteredBookmarks.count
+                        let spacing: CGFloat = 14
+                        let columnWidth = (contentWidth - spacing * CGFloat(columnCount - 1)) / CGFloat(max(columnCount, 1))
+                        let columns = splitIntoColumns(bookmarks: visibleBookmarks, columns: columnCount)
+
+                        VStack(alignment: .leading, spacing: 0) {
+                            HStack(alignment: .top, spacing: spacing) {
+                                ForEach(0 ..< columnCount, id: \.self) { colIndex in
+                                    let columnBookmarks = colIndex < columns.count ? columns[colIndex] : []
+                                    LazyVStack(spacing: spacing) {
+                                        ForEach(Array(columnBookmarks.enumerated()), id: \.element.id) { index, bm in
+                                            bookmarkCell(for: bm)
+                                                .onAppear {
+                                                    let isLastInColumn = index == columnBookmarks.count - 1
+                                                    if isLastInColumn, displayedCount < totalCount {
+                                                        loadMore(totalCount: totalCount)
+                                                    }
+                                                }
                                         }
                                     }
+                                    .frame(width: max(columnWidth, 1), alignment: .top)
+                                }
+                            }
+                            .frame(width: contentWidth, alignment: .topLeading)
+
+                            if displayedCount < totalCount {
+                                Color.clear
+                                    .frame(height: 20)
+                                    .onAppear { loadMore(totalCount: totalCount) }
                             }
                         }
-                        .frame(width: contentWidth, alignment: .topLeading)
-
-                        // 底部哨兵：兜底，滚到最底时再拉一页
-                        if displayedCount < totalCount {
-                            Color.clear
-                                .frame(height: 20)
-                                .onAppear {
-                                    loadMore(totalCount: totalCount)
-                                }
-                        }
-
-                        // 加载更多时显示进度条
-                        if isLoadingMore {
-                            ProgressView()
-                                .progressViewStyle(.linear)
-                                .frame(height: 3)
-                                .tint(currentTheme.color)
-                                .padding(.top, 8)
-                                .padding(.horizontal, 22)
-                        }
+                        .padding(.horizontal, 22)
+                        .padding(.bottom, 8)
                     }
-                    .padding(.horizontal, 22)
-                    .padding(.bottom, 22)
+                }
+                .scrollIndicators(.visible)
+
+                if !filteredBookmarks.isEmpty {
+                    listProgressFooter(totalCount: filteredBookmarks.count)
                 }
             }
         }
+    }
+
+    /// 底部固定：已显示数量 / 总数，以及加载中时的进度条
+    private func listProgressFooter(totalCount: Int) -> some View {
+        VStack(spacing: 6) {
+            if isLoadingMore {
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .frame(height: 3)
+                    .tint(currentTheme.color)
+                    .padding(.horizontal, 22)
+            }
+            Text(displayedCount >= totalCount
+                 ? "共 \(totalCount) 条"
+                 : "已显示 \(displayedCount) / \(totalCount) 条")
+                .font(.caption)
+                .foregroundStyle(AppTheme.textTertiary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 22)
+        .background(AppTheme.bgPrimary)
     }
 
     private var emptyState: some View {
@@ -928,59 +969,6 @@ struct ContentView: View {
         await MainActor.run {
             try? modelContext.save()
         }
-    }
-}
-
-private struct MasonryLayout: Layout {
-    let columns: Int
-    let spacing: CGFloat
-
-    func sizeThatFits(
-        proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
-    ) -> CGSize {
-        guard !subviews.isEmpty else { return .zero }
-        guard let width = proposal.width, width > 0 else {
-            let fallbackWidth: CGFloat = 1000
-            return measureLayout(for: fallbackWidth, subviews: subviews).size
-        }
-        return measureLayout(for: width, subviews: subviews).size
-    }
-
-    func placeSubviews(
-        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
-    ) {
-        guard !subviews.isEmpty, bounds.width > 0 else { return }
-        let measured = measureLayout(for: bounds.width, subviews: subviews)
-        for (index, frame) in measured.frames.enumerated() {
-            subviews[index].place(
-                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
-                anchor: .topLeading,
-                proposal: ProposedViewSize(width: frame.width, height: nil)
-            )
-        }
-    }
-
-    private func measureLayout(for width: CGFloat, subviews: Subviews) -> (size: CGSize, frames: [CGRect]) {
-        let columnCount = max(columns, 1)
-        let totalSpacing = spacing * CGFloat(columnCount - 1)
-        let columnWidth = max((width - totalSpacing) / CGFloat(columnCount), 1)
-
-        var columnHeights = Array(repeating: CGFloat(0), count: columnCount)
-        var frames: [CGRect] = []
-        frames.reserveCapacity(subviews.count)
-
-        for subview in subviews {
-            let targetColumn = columnHeights.enumerated().min(by: { $0.element < $1.element })?.offset ?? 0
-            let x = CGFloat(targetColumn) * (columnWidth + spacing)
-            let y = columnHeights[targetColumn]
-            let fit = subview.sizeThatFits(ProposedViewSize(width: columnWidth, height: nil))
-            let h = fit.height
-            frames.append(CGRect(x: x, y: y, width: columnWidth, height: h))
-            columnHeights[targetColumn] += h + spacing
-        }
-
-        let contentHeight = max((columnHeights.max() ?? spacing) - spacing, 0)
-        return (CGSize(width: width, height: contentHeight), frames)
     }
 }
 
