@@ -1,40 +1,123 @@
 import AppKit
 import Foundation
 
+/// Click action types for bookmarks
+enum ClickAction: String, CaseIterable, Codable {
+    case browser = "browser"
+    case copy = "copy"
+    case edit = "edit"
+    case script = "script"
+
+    var label: String {
+        switch self {
+        case .browser: return "浏览器打开"
+        case .copy: return "复制"
+        case .edit: return "编辑"
+        case .script: return "自定义脚本"
+        }
+    }
+}
+
 enum OpenService {
-    /// Open a bookmark using its configured method, falling back to default browser
-    static func open(_ bookmark: Bookmark) {
-        guard let url = URL(string: bookmark.url) else { return }
+    /// Get the text content for a bookmark (URL for links, snippet text for snippets)
+    static func textFor(_ bookmark: Bookmark) -> String {
+        if bookmark.isSnippet {
+            return bookmark.snippetText.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return bookmark.url
+    }
 
+    /// Resolve the click action for a bookmark.
+    /// Card-level custom script overrides global settings.
+    static func resolveAction(for bookmark: Bookmark, isCmdClick: Bool) -> ClickAction {
         if let script = bookmark.openWithScript, !script.isEmpty {
-            runScript(script, url: url)
-        } else if let bundleID = bookmark.openWithApp, !bundleID.isEmpty {
-            openWithApp(url: url, bundleID: bundleID)
+            return .script
+        }
+
+        let key: String
+        if bookmark.isSnippet {
+            key = isCmdClick ? "snippet.cmdClickAction" : "snippet.clickAction"
         } else {
-            NSWorkspace.shared.open(url)
+            key = isCmdClick ? "link.cmdClickAction" : "link.clickAction"
+        }
+
+        let raw = UserDefaults.standard.string(forKey: key) ?? ""
+        if let action = ClickAction(rawValue: raw) { return action }
+
+        // Defaults: link click → browser, snippet click → copy, cmd+click → edit
+        if isCmdClick { return .edit }
+        return bookmark.isSnippet ? .copy : .browser
+    }
+
+    /// Resolve the script command for an action.
+    /// Card-level script overrides global settings.
+    static func resolveScript(for bookmark: Bookmark, isCmdClick: Bool) -> String {
+        if let script = bookmark.openWithScript, !script.isEmpty {
+            return script
+        }
+
+        let key: String
+        if bookmark.isSnippet {
+            key = isCmdClick ? "snippet.cmdClickScript" : "snippet.clickScript"
+        } else {
+            key = isCmdClick ? "link.cmdClickScript" : "link.clickScript"
+        }
+
+        return UserDefaults.standard.string(forKey: key) ?? ""
+    }
+
+    /// Execute a click action. Returns `false` when action is `.edit` (caller must show detail sheet).
+    static func executeAction(_ action: ClickAction, bookmark: Bookmark, isCmdClick: Bool) -> Bool {
+        let text = textFor(bookmark)
+
+        switch action {
+        case .browser:
+            if let url = URL(string: bookmark.url) {
+                NSWorkspace.shared.open(url)
+            }
+            return true
+
+        case .copy:
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            return true
+
+        case .edit:
+            return false
+
+        case .script:
+            let script = resolveScript(for: bookmark, isCmdClick: isCmdClick)
+            guard !script.isEmpty else { return true }
+            runTextScript(script, text: text)
+            return true
         }
     }
 
-    /// Open URL with a specific application by bundle identifier
-    static func openWithApp(url: URL, bundleID: String) {
-        guard
-            let appURL = NSWorkspace.shared.urlForApplication(
-                withBundleIdentifier: bundleID)
-        else {
-            NSWorkspace.shared.open(url)
-            return
-        }
-        let config = NSWorkspace.OpenConfiguration()
-        NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: config)
-    }
-
-    /// Run a shell command, replacing {url} with the bookmark URL
-    static func runScript(_ script: String, url: URL) {
-        let command = script.replacingOccurrences(of: "{url}", with: url.absoluteString)
+    /// Run a shell command, replacing {TEXT} with the text content.
+    /// Also supports legacy {url} placeholder for backward compatibility.
+    static func runTextScript(_ script: String, text: String) {
+        let command = script
+            .replacingOccurrences(of: "{TEXT}", with: text)
+            .replacingOccurrences(of: "{url}", with: text)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", command]
         try? process.run()
+    }
+
+    /// Simple open: browser for links, copy for snippets.
+    /// Used by context menu and detail sheet.
+    static func open(_ bookmark: Bookmark) {
+        if bookmark.isSnippet {
+            let content = bookmark.snippetText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(content, forType: .string)
+            return
+        }
+
+        guard let url = URL(string: bookmark.url) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     /// List installed applications that can open URLs

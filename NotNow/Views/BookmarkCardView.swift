@@ -33,7 +33,7 @@ private enum CoverImageCache {
     private static let lock = NSLock()
 
     static func image(for id: UUID, data: Data?) -> NSImage? {
-        guard let data else { return nil }
+        guard data != nil else { return nil }
         lock.lock()
         defer { lock.unlock() }
         if let cached = cache[id] { return cached }
@@ -55,30 +55,33 @@ private enum CoverImageCache {
 
 struct BookmarkCardView: View {
     let bookmark: Bookmark
-    @State private var isHovered = false
     /// Decoded cover image; loaded async to avoid blocking main thread during scroll.
     @State private var displayCover: NSImage?
+    @State private var relativeCreatedAtText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if bookmark.hasCover {
+            if bookmark.isSnippet {
+                snippetCard
+            } else if bookmark.hasCover {
                 coverCard
             } else {
                 compactCard
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-        .glassCard(isHovered: isHovered)
-        .scaleEffect(isHovered ? 1.02 : 1)
-        .animation(.easeOut(duration: 0.2), value: isHovered)
-        .onHover { isHovered = $0 }
+        .glassCard(isHovered: false)
         .onAppear {
+            refreshRelativeCreatedAtText()
             guard bookmark.hasCover, displayCover == nil else { return }
             Task { await loadCoverIfNeeded() }
         }
         .onChange(of: bookmark.updatedAt) {
             if bookmark.hasCover { Task { await loadCoverIfNeeded() } }
             else { displayCover = nil }
+        }
+        .onChange(of: bookmark.createdAt) {
+            refreshRelativeCreatedAtText()
         }
     }
 
@@ -105,6 +108,42 @@ struct BookmarkCardView: View {
     }
 
     // MARK: - Card With Cover
+
+    private var snippetCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Markdown content area (cover position)
+            Group {
+                if let md = try? AttributedString(markdown: snippetPreviewText, options: .init(interpretedSyntax: .full)) {
+                    Text(md)
+                } else {
+                    Text(snippetPreviewText)
+                }
+            }
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(AppTheme.textSecondary)
+            .lineLimit(8)
+            .frame(maxWidth: .infinity, minHeight: 100, alignment: .topLeading)
+            .padding(12)
+            .background(AppTheme.bgInput)
+
+            // Content below
+            VStack(alignment: .leading, spacing: 8) {
+                Text(bookmark.title.isEmpty ? "Snippet" : bookmark.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .lineLimit(2)
+
+                HStack(spacing: 6) {
+                    tagPill("snippet")
+                    Spacer(minLength: 0)
+                }
+                .frame(height: 18)
+
+                tagsAndMeta
+            }
+            .padding(12)
+        }
+    }
 
     private var coverCard: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -242,22 +281,13 @@ struct BookmarkCardView: View {
 
             // Bottom meta row
             HStack(spacing: 8) {
-                if bookmark.isRead {
-                    HStack(spacing: 3) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 9))
-                        Text("已读")
-                            .font(.system(size: 9))
-                    }
-                    .foregroundStyle(AppTheme.accentGreen)
-                }
-                if bookmark.openWithApp != nil || bookmark.openWithScript != nil {
+                if bookmark.openWithScript != nil {
                     Image(systemName: "arrow.up.forward.app")
                         .font(.system(size: 9))
                         .foregroundStyle(AppTheme.accentPink)
                 }
                 Spacer()
-                Text(bookmark.createdAt.formatted(.relative(presentation: .named)))
+                Text(relativeCreatedAtText)
                     .font(.system(size: 10))
                     .foregroundStyle(AppTheme.textTertiary)
             }
@@ -274,6 +304,16 @@ struct BookmarkCardView: View {
             .background(color.opacity(0.12))
             .clipShape(Capsule())
             .lineLimit(1)
+    }
+
+    private func refreshRelativeCreatedAtText() {
+        relativeCreatedAtText = bookmark.createdAt.formatted(.relative(presentation: .named))
+    }
+
+    private var snippetPreviewText: String {
+        let text = bookmark.snippetText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return bookmark.desc }
+        return text
     }
 }
 

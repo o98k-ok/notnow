@@ -35,39 +35,22 @@ struct ContentView: View {
     @State private var notNowZipURL: URL?
     @State private var isBatchMode = false
     @State private var selectedBookmarkIDs: Set<UUID> = []
-    @State private var hoverPreviewBookmark: Bookmark?
-    @State private var hoverPreviewTask: DispatchWorkItem?
-    @State private var hoverPreviewLocation: CGPoint?
     @State private var showSettings = false
     @FocusState private var isSearchFocused: Bool
     /// 分页：首屏条数，滚动到底或最后一格出现时加载下一页
     private static let pageSize = 20
     @State private var displayedCount = ContentView.pageSize
     @State private var isLoadingMore = false
+    @State private var filteredBookmarksCache: [Bookmark] = []
+    @State private var categoryBookmarkCounts: [UUID: Int] = [:]
+    @State private var uncategorizedBookmarkCount = 0
+    @State private var visibleBookmarksCache: [Bookmark] = []
+    @State private var columnBookmarksCache: [[Bookmark]] = []
+    @State private var refreshTask: Task<Void, Never>?
+    @State private var isBatchRetagging = false
+    @State private var batchRetagProgressText = ""
 
-    private var filteredBookmarks: [Bookmark] {
-        bookmarks.filter { bm in
-            switch selection {
-            case .all: break
-            case .category(let id):
-                guard bm.category?.id == id else { return false }
-            case .uncategorized:
-                guard bm.category == nil else { return false }
-            }
-            if !searchText.isEmpty {
-                let q = searchText.lowercased()
-                let match =
-                    bm.title.lowercased().contains(q)
-                    || bm.url.lowercased().contains(q)
-                    || bm.desc.lowercased().contains(q)
-                    || bm.notes.lowercased().contains(q)
-                    || bm.tags.contains { $0.lowercased().contains(q) }
-                    || bm.domain.lowercased().contains(q)
-                if !match { return false }
-            }
-            return true
-        }
-    }
+    private var filteredBookmarks: [Bookmark] { filteredBookmarksCache }
 
     private var currentTheme: AccentTheme {
         AccentTheme(rawValue: accentThemeName) ?? .purple
@@ -125,15 +108,28 @@ struct ContentView: View {
         }
         .onAppear {
             NSLog("[NotNow] app appeared, bookmarks: %d", bookmarks.count)
+            ensureFavoriteCategoryExists()
+            refreshDerivedCollections()
         }
         .onChange(of: showCategorySheet) {
             if !showCategorySheet { editingCategory = nil }
         }
+        .onChange(of: bookmarks) {
+            scheduleDerivedRefresh()
+        }
         .onChange(of: selection) {
             displayedCount = ContentView.pageSize
+            refreshDerivedCollections()
         }
         .onChange(of: searchText) {
             displayedCount = ContentView.pageSize
+            scheduleDerivedRefresh()
+        }
+        .onChange(of: displayedCount) {
+            refreshVisibleLayout()
+        }
+        .onChange(of: columnCount) {
+            refreshVisibleLayout()
         }
         .alert("导入结果", isPresented: $showImportAlert) {
             Button("好的", role: .cancel) {}
@@ -142,6 +138,10 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .showSettings)) { _ in
             showSettings = true
+        }
+        .onDisappear {
+            refreshTask?.cancel()
+            refreshTask = nil
         }
     }
 
@@ -214,7 +214,7 @@ struct ContentView: View {
             ScrollView {
                 VStack(spacing: 2) {
                     ForEach(categories) { cat in
-                        let catCount = bookmarks.filter { $0.category?.id == cat.id }.count
+                        let catCount = categoryBookmarkCounts[cat.id] ?? 0
                         sidebarItem(
                             label: cat.name, icon: cat.icon,
                             isActive: selection == .category(cat.id),
@@ -234,7 +234,7 @@ struct ContentView: View {
                     }
 
                     // Uncategorized
-                    let uncatCount = bookmarks.filter { $0.category == nil }.count
+                    let uncatCount = uncategorizedBookmarkCount
                     if uncatCount > 0 {
                         sidebarItem(
                             label: "未分类", icon: "tray",
@@ -300,26 +300,6 @@ struct ContentView: View {
             bookmarkGrid
         }
         .background(AppTheme.bgPrimary)
-        .overlay {
-            GeometryReader { geo in
-                ZStack {
-                    MouseTrackingView(location: $hoverPreviewLocation, active: hoverPreviewBookmark != nil)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .allowsHitTesting(false)
-                    if let bm = hoverPreviewBookmark, let loc = hoverPreviewLocation {
-                        let w: CGFloat = 260
-                        let h: CGFloat = 140
-                        let pad: CGFloat = 16
-                        let cx = min(max(loc.x + 24, w / 2 + pad), geo.size.width - w / 2 - pad)
-                        let cy = min(max(loc.y - 24, h / 2 + pad), geo.size.height - h / 2 - pad)
-                        HoverPreviewCard(bookmark: bm)
-                            .frame(width: w, height: h, alignment: .topLeading)
-                            .position(x: cx, y: cy)
-                            .allowsHitTesting(false)
-                    }
-                }
-            }
-        }
     }
 
     private var topBar: some View {
@@ -422,6 +402,24 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(selectedBookmarkIDs.isEmpty)
+
+                    Button {
+                        retagSelected()
+                    } label: {
+                        HStack(spacing: 6) {
+                            if isBatchRetagging {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "wand.and.stars")
+                            }
+                            Text(isBatchRetagging ? batchRetagProgressText : "重打标(\(selectedBookmarkIDs.count))")
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        .ghostButtonStyle()
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(selectedBookmarkIDs.isEmpty || isBatchRetagging)
                 }
             }
 
@@ -526,16 +524,14 @@ struct ContentView: View {
                         emptyState
                     } else {
                         let contentWidth = max(proxy.size.width - 44, 1)
-                        let visibleBookmarks = Array(filteredBookmarks.prefix(displayedCount))
                         let totalCount = filteredBookmarks.count
                         let spacing: CGFloat = 14
                         let columnWidth = (contentWidth - spacing * CGFloat(columnCount - 1)) / CGFloat(max(columnCount, 1))
-                        let columns = splitIntoColumns(bookmarks: visibleBookmarks, columns: columnCount)
 
                         VStack(alignment: .leading, spacing: 0) {
                             HStack(alignment: .top, spacing: spacing) {
                                 ForEach(0 ..< columnCount, id: \.self) { colIndex in
-                                    let columnBookmarks = colIndex < columns.count ? columns[colIndex] : []
+                                    let columnBookmarks = colIndex < columnBookmarksCache.count ? columnBookmarksCache[colIndex] : []
                                     LazyVStack(spacing: spacing) {
                                         ForEach(Array(columnBookmarks.enumerated()), id: \.element.id) { index, bm in
                                             bookmarkCell(for: bm)
@@ -629,9 +625,11 @@ struct ContentView: View {
 
     @ViewBuilder
     private func contextMenu(for bm: Bookmark) -> some View {
-        Button("打开") { OpenService.open(bm) }
-        Button("在浏览器中打开") {
-            if let url = URL(string: bm.url) { NSWorkspace.shared.open(url) }
+        Button(bm.isSnippet ? "复制内容" : "打开") { OpenService.open(bm) }
+        if !bm.isSnippet {
+            Button("在浏览器中打开") {
+                if let url = URL(string: bm.url) { NSWorkspace.shared.open(url) }
+            }
         }
         Divider()
         // Move to category
@@ -645,10 +643,7 @@ struct ContentView: View {
             }
         }
         Button(bm.isFavorite ? "取消收藏" : "收藏") {
-            bm.isFavorite.toggle(); bm.updatedAt = Date()
-        }
-        Button(bm.isRead ? "标为未读" : "标为已读") {
-            bm.isRead.toggle(); bm.updatedAt = Date()
+            toggleFavorite(bm)
         }
         Divider()
         Button("复制链接") {
@@ -662,9 +657,6 @@ struct ContentView: View {
 
     private func bookmarkCell(for bookmark: Bookmark) -> some View {
         BookmarkCardView(bookmark: bookmark)
-            .onHover { inside in
-                handleHover(for: bookmark, isInside: inside)
-            }
             .clipped()
             .overlay(alignment: .topLeading) {
                 if isBatchMode {
@@ -672,21 +664,16 @@ struct ContentView: View {
                 }
             }
             .contentShape(Rectangle())
-            .onTapGesture(count: 2) {
-                if !isBatchMode { OpenService.open(bookmark) }
-            }
-            .simultaneousGesture(
-                TapGesture()
-                    .modifiers(.command)
-                    .onEnded { OpenService.open(bookmark) }
-            )
             .onTapGesture {
                 if isBatchMode {
                     toggleSelection(for: bookmark.id)
-                } else {
-                    selectedBookmark = bookmark
+                } else if !NSEvent.modifierFlags.contains(.command) {
+                    handleClickAction(for: bookmark, isCmdClick: false)
                 }
             }
+            .modifier(NonBatchGesturesModifier(isBatchMode: isBatchMode) {
+                handleClickAction(for: bookmark, isCmdClick: true)
+            })
             .contextMenu { contextMenu(for: bookmark) }
     }
 
@@ -711,37 +698,6 @@ struct ContentView: View {
         .frame(width: 20, height: 20)
         .overlay(Circle().stroke(AppTheme.borderHover, lineWidth: 1))
         .padding(8)
-    }
-
-    private func handleHover(for bookmark: Bookmark, isInside: Bool) {
-        if isInside {
-            scheduleHoverPreview(for: bookmark)
-        } else {
-            scheduleHoverPreview(for: nil)
-        }
-    }
-
-    private func scheduleHoverPreview(for bookmark: Bookmark?) {
-        hoverPreviewTask?.cancel()
-        hoverPreviewTask = nil
-
-        guard let bookmark else {
-            withAnimation(.easeOut(duration: 0.15)) {
-                hoverPreviewBookmark = nil
-                hoverPreviewLocation = nil
-            }
-            return
-        }
-
-        let task = DispatchWorkItem {
-            DispatchQueue.main.async {
-                withAnimation(.easeOut(duration: 0.15)) {
-                    hoverPreviewBookmark = bookmark
-                }
-            }
-        }
-        hoverPreviewTask = task
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: task)
     }
 
     private func toggleSelection(for id: UUID) {
@@ -782,6 +738,320 @@ struct ContentView: View {
         try? modelContext.save()
         selectedBookmarkIDs.removeAll()
         isBatchMode = false
+    }
+
+    private func toggleFavorite(_ bm: Bookmark) {
+        bm.isFavorite.toggle()
+        bm.updatedAt = Date()
+        
+        // 管理收藏分类
+        let favoriteCategory = ensureFavoriteCategory()
+        if bm.isFavorite {
+            bm.category = favoriteCategory
+        } else {
+            // 如果当前在收藏分类中，移除分类
+            if bm.category?.id == favoriteCategory.id {
+                bm.category = nil
+            }
+        }
+        
+        try? modelContext.save()
+    }
+
+    private func ensureFavoriteCategory() -> Category {
+        // 查找现有的收藏分类
+        if let existing = categories.first(where: { $0.name == "收藏" }) {
+            return existing
+        }
+        
+        // 创建新的收藏分类
+        let favoriteCategory = Category(
+            name: "收藏",
+            icon: "star.fill",
+            colorHex: 0xFFD700, // 金色
+            sortOrder: -1 // 排在最前面
+        )
+        modelContext.insert(favoriteCategory)
+        try? modelContext.save()
+        return favoriteCategory
+    }
+
+    private func ensureFavoriteCategoryExists() {
+        // 检查是否已存在收藏分类
+        if categories.contains(where: { $0.name == "收藏" }) {
+            return
+        }
+        
+        // 创建默认收藏分类
+        let favoriteCategory = Category(
+            name: "收藏",
+            icon: "star.fill",
+            colorHex: 0xFFD700, // 金色
+            sortOrder: -1 // 排在最前面
+        )
+        modelContext.insert(favoriteCategory)
+        try? modelContext.save()
+    }
+
+    private func retagSelected() {
+        guard !selectedBookmarkIDs.isEmpty else { return }
+        guard !isBatchRetagging else { return }
+        let selected = bookmarks.filter { selectedBookmarkIDs.contains($0.id) }
+        guard !selected.isEmpty else { return }
+
+        // 分类统计
+        let snippets = selected.filter { $0.isSnippet }
+        let twitterLinks = selected.filter { isTwitterURL($0.url) && !$0.isSnippet }
+        let normalLinks = selected.filter { !isTwitterURL($0.url) && !$0.isSnippet }
+
+        // 检查 Twitter 配置
+        let canProcessTwitter = twitterLikesEnabled && !twitterLikesBinPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if !twitterLinks.isEmpty && !canProcessTwitter {
+            // 显示警告但继续处理其他类型
+            importAlertMessage = "检测到 \(twitterLinks.count) 条 Twitter 链接，但未配置 Actionbook。将跳过 Twitter 链接，使用普通链接处理方式。"
+            showImportAlert = true
+        }
+
+        isBatchRetagging = true
+        batchRetagProgressText = "重打标中 0/\(selected.count)"
+
+        Task {
+            var stats = BatchRetagStats(total: selected.count)
+
+            for (index, bm) in selected.enumerated() {
+                await retagBookmark(bm, canProcessTwitter: canProcessTwitter, stats: &stats)
+                await MainActor.run {
+                    batchRetagProgressText = "重打标中 \(index + 1)/\(stats.total)"
+                }
+            }
+
+            await MainActor.run {
+                try? modelContext.save()
+                isBatchRetagging = false
+                batchRetagProgressText = ""
+                importAlertMessage = "批量重打标完成：共处理 \(stats.total) 条（Snippet: \(stats.snippets), 普通链接: \(stats.normalLinks), Twitter: \(stats.twitterLinks), 跳过: \(stats.skipped)）"
+                showImportAlert = true
+            }
+        }
+    }
+
+    private func refreshDerivedCollections() {
+        var counts: [UUID: Int] = [:]
+        var uncat = 0
+        for bm in bookmarks {
+            if let id = bm.category?.id {
+                counts[id, default: 0] += 1
+            } else {
+                uncat += 1
+            }
+        }
+        categoryBookmarkCounts = counts
+        uncategorizedBookmarkCount = uncat
+
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        filteredBookmarksCache = bookmarks.filter { bm in
+            switch selection {
+            case .all: break
+            case .category(let id):
+                guard bm.category?.id == id else { return false }
+            case .uncategorized:
+                guard bm.category == nil else { return false }
+            }
+
+            if q.isEmpty { return true }
+            return bm.title.lowercased().contains(q)
+                || bm.url.lowercased().contains(q)
+                || bm.desc.lowercased().contains(q)
+                || bm.snippetText.lowercased().contains(q)
+                || bm.notes.lowercased().contains(q)
+                || bm.tags.contains { $0.lowercased().contains(q) }
+                || bm.domain.lowercased().contains(q)
+        }
+
+        let validIDs = Set(filteredBookmarksCache.map(\.id))
+        selectedBookmarkIDs = selectedBookmarkIDs.intersection(validIDs)
+        refreshVisibleLayout()
+    }
+
+    private func refreshVisibleLayout() {
+        visibleBookmarksCache = Array(filteredBookmarksCache.prefix(displayedCount))
+        columnBookmarksCache = splitIntoColumns(bookmarks: visibleBookmarksCache, columns: columnCount)
+    }
+
+    private func handleClickAction(for bookmark: Bookmark, isCmdClick: Bool) {
+        let action = OpenService.resolveAction(for: bookmark, isCmdClick: isCmdClick)
+        if !OpenService.executeAction(action, bookmark: bookmark, isCmdClick: isCmdClick) {
+            selectedBookmark = bookmark
+        }
+    }
+
+    private func isTwitterURL(_ rawURL: String) -> Bool {
+        guard let u = URL(string: rawURL), let host = u.host?.lowercased() else { return false }
+        return host.contains("x.com") || host.contains("twitter.com")
+    }
+
+    private func normalizedTags(_ tags: [String]) -> [String] {
+        var seen = Set<String>()
+        return tags
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .filter { tag in
+                let lower = tag.lowercased()
+                if seen.contains(lower) { return false }
+                seen.insert(lower)
+                return true
+            }
+    }
+
+    private func retagBookmark(_ bm: Bookmark, canProcessTwitter: Bool, stats: inout BatchRetagStats) async {
+        if bm.isSnippet {
+            await retagSnippetBookmark(bm)
+            stats.snippets += 1
+        } else if isTwitterURL(bm.url) {
+            if canProcessTwitter {
+                await retagTwitterBookmark(bm)
+                stats.twitterLinks += 1
+            } else {
+                // Twitter 未配置时作为普通链接处理
+                await retagNormalBookmark(bm)
+                stats.normalLinks += 1
+            }
+        } else {
+            await retagNormalBookmark(bm)
+            stats.normalLinks += 1
+        }
+    }
+
+    private func retagSnippetBookmark(_ bm: Bookmark) async {
+        let content = await MainActor.run { bm.snippetText }
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if let ai = await AIService.shared.refineSnippet(
+            content: content,
+            originalTitle: await MainActor.run { bm.title },
+            originalDesc: await MainActor.run { bm.desc }
+        ) {
+            await MainActor.run {
+                if let t = ai.title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+                    bm.title = t
+                }
+                if let d = ai.desc?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty {
+                    bm.desc = d
+                }
+                if let tagList = ai.tags {
+                    bm.tags = normalizedTags(tagList)
+                }
+                bm.updatedAt = Date()
+            }
+        } else {
+            await MainActor.run { bm.updatedAt = Date() }
+        }
+    }
+
+    private func retagNormalBookmark(_ bm: Bookmark) async {
+        let metadata = await MetadataService.shared.fetch(from: bm.url, fetchImage: true)
+        await MainActor.run {
+            if let title = metadata.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+                bm.title = title
+            }
+            if let desc = metadata.description?.trimmingCharacters(in: .whitespacesAndNewlines), !desc.isEmpty {
+                bm.desc = desc
+            }
+            if let imageURL = metadata.imageURL?.trimmingCharacters(in: .whitespacesAndNewlines), !imageURL.isEmpty {
+                bm.coverURL = imageURL
+            }
+            if let data = metadata.imageData {
+                bm.coverData = data
+            }
+        }
+
+        if let ai = await AIService.shared.refineTitleAndDescription(
+            for: bm.url,
+            originalTitle: await MainActor.run { bm.title },
+            originalDesc: await MainActor.run { bm.desc }
+        ) {
+            await MainActor.run {
+                if let t = ai.title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+                    bm.title = t
+                }
+                if let d = ai.desc?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty {
+                    bm.desc = d
+                }
+                if let tagList = ai.tags {
+                    bm.tags = normalizedTags(tagList)
+                }
+                bm.updatedAt = Date()
+            }
+        } else {
+            await MainActor.run {
+                bm.updatedAt = Date()
+            }
+        }
+    }
+
+    private func retagTwitterBookmark(_ bm: Bookmark) async {
+        let binPath = twitterLikesBinPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let settle = max(1, twitterLikesTweetSettleSeconds)
+        let extracted = await TwitterTweetExtractor.extractTweet(
+            tweetURL: bm.url,
+            actionbookBinPath: binPath,
+            settleSeconds: settle
+        )
+
+        let tweetText = (extracted?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let truncatedDesc = tweetText.isEmpty ? "" : String(tweetText.prefix(280))
+
+        await MainActor.run {
+            if !tweetText.isEmpty {
+                bm.title = tweetText
+                bm.desc = truncatedDesc
+            } else if let fallback = extracted?.fallbackTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !fallback.isEmpty {
+                bm.title = fallback
+            }
+            if let imageURL = extracted?.imageURL?.trimmingCharacters(in: .whitespacesAndNewlines), !imageURL.isEmpty {
+                bm.coverURL = imageURL
+            }
+        }
+
+        if let imageURL = extracted?.imageURL, !imageURL.isEmpty {
+            let imageData = await MetadataService.shared.fetchImageData(from: imageURL)
+            await MainActor.run {
+                if let imageData {
+                    bm.coverData = imageData
+                }
+            }
+        }
+
+        if let ai = await AIService.shared.refineTitleAndDescription(
+            for: bm.url,
+            originalTitle: await MainActor.run { bm.title },
+            originalDesc: await MainActor.run { bm.desc }
+        ) {
+            await MainActor.run {
+                if let t = ai.title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+                    bm.title = t
+                }
+                if let d = ai.desc?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty {
+                    bm.desc = d
+                }
+                if let tagList = ai.tags {
+                    bm.tags = normalizedTags(tagList)
+                }
+                bm.updatedAt = Date()
+            }
+        } else {
+            await MainActor.run {
+                bm.updatedAt = Date()
+            }
+        }
+    }
+
+    private func scheduleDerivedRefresh() {
+        refreshTask?.cancel()
+        refreshTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            refreshDerivedCollections()
+        }
     }
 
     private func importBookmarks(from source: ImportSource) {
@@ -1123,119 +1393,35 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Mouse tracking for follow-cursor preview
+// MARK: - Batch Retag Stats
 
-private final class MouseTrackingHostView: NSView {
-    var onMove: ((CGPoint) -> Void)?
-    var onExit: (() -> Void)?
+private struct BatchRetagStats {
+    var total: Int
+    var snippets: Int = 0
+    var normalLinks: Int = 0
+    var twitterLinks: Int = 0
+    var skipped: Int = 0
 
-    override var isFlipped: Bool { true }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        for area in trackingAreas {
-            removeTrackingArea(area)
-        }
-        addTrackingArea(NSTrackingArea(
-            rect: bounds,
-            options: [.activeAlways, .mouseMoved, .mouseEnteredAndExited],
-            owner: self,
-            userInfo: nil
-        ))
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        onMove?(p)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        onExit?()
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        onMove?(p)
+    init(total: Int) {
+        self.total = total
     }
 }
 
-private struct MouseTrackingView: NSViewRepresentable {
-    @Binding var location: CGPoint?
-    var active: Bool
+private struct NonBatchGesturesModifier: ViewModifier {
+    let isBatchMode: Bool
+    let onCmdClick: () -> Void
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeNSView(context: Context) -> MouseTrackingHostView {
-        let v = MouseTrackingHostView()
-        v.wantsLayer = true
-        return v
-    }
-
-    func updateNSView(_ nsView: MouseTrackingHostView, context: Context) {
-        let binding = $location
-        nsView.onMove = active ? { p in
-            DispatchQueue.main.async { binding.wrappedValue = p }
-        } : nil
-        nsView.onExit = active ? {
-            DispatchQueue.main.async { binding.wrappedValue = nil }
-        } : nil
-        if active, !context.coordinator.wasActive, let window = nsView.window {
-            context.coordinator.wasActive = true
-            let screenLoc = NSEvent.mouseLocation
-            let winLoc = window.convertPoint(fromScreen: screenLoc)
-            let viewLoc = nsView.convert(winLoc, from: nil)
-            if nsView.bounds.contains(viewLoc) {
-                DispatchQueue.main.async { binding.wrappedValue = viewLoc }
-            }
+    func body(content: Content) -> some View {
+        if isBatchMode {
+            content
+        } else {
+            content
+                .simultaneousGesture(
+                    TapGesture()
+                        .modifiers(.command)
+                        .onEnded { onCmdClick() }
+                )
         }
-        if !active {
-            context.coordinator.wasActive = false
-        }
-    }
-
-    final class Coordinator {
-        var wasActive = false
-    }
-}
-
-private struct HoverPreviewCard: View {
-    let bookmark: Bookmark
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(bookmark.title.isEmpty ? bookmark.domain : bookmark.title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(AppTheme.textPrimary)
-                .lineLimit(2)
-
-            if !bookmark.desc.isEmpty {
-                Text(bookmark.desc)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.textSecondary)
-                    .lineLimit(3)
-            }
-
-            HStack(spacing: 6) {
-                Image(systemName: "globe")
-                    .font(.system(size: 10))
-                Text(bookmark.domain)
-                    .font(.caption2)
-                Spacer()
-                Text(bookmark.createdAt.formatted(.relative(presentation: .named)))
-                    .font(.system(size: 10))
-            }
-            .foregroundStyle(AppTheme.textTertiary)
-        }
-        .padding(12)
-        .background(AppTheme.bgElevated)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(AppTheme.borderSubtle, lineWidth: 1)
-        )
-        .shadow(color: AppTheme.glowAccent.opacity(0.4), radius: 16)
     }
 }
 
@@ -1950,7 +2136,14 @@ private struct SettingsView: View {
     @AppStorage("twitterLikes.likesURL") private var twitterLikesURL = ""
     @AppStorage("twitterLikes.maxFetchCount") private var twitterLikesMaxFetchCount = 80
     @AppStorage("twitterLikes.tweetSettleSeconds") private var twitterLikesTweetSettleSeconds = 8
-    @AppStorage("settings.showAdvancedConfig") private var showAdvancedConfig = false
+    @AppStorage("link.clickAction") private var linkClickAction = ClickAction.browser.rawValue
+    @AppStorage("link.cmdClickAction") private var linkCmdClickAction = ClickAction.edit.rawValue
+    @AppStorage("link.clickScript") private var linkClickScript = ""
+    @AppStorage("link.cmdClickScript") private var linkCmdClickScript = ""
+    @AppStorage("snippet.clickAction") private var snippetClickAction = ClickAction.copy.rawValue
+    @AppStorage("snippet.cmdClickAction") private var snippetCmdClickAction = ClickAction.edit.rawValue
+    @AppStorage("snippet.clickScript") private var snippetClickScript = ""
+    @AppStorage("snippet.cmdClickScript") private var snippetCmdClickScript = ""
 
     @State private var aiTesting = false
     @State private var aiTestMessage = ""
@@ -1958,20 +2151,25 @@ private struct SettingsView: View {
     @State private var isExporting = false
     @State private var exportError: String?
 
+    @State private var expandedSection: SettingsSectionID?
+
+    private enum SettingsSectionID: Hashable {
+        case twitter, clickAction, appearance, ai
+    }
+
     private var currentTheme: AccentTheme {
         AccentTheme(rawValue: accentThemeName) ?? .purple
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
             HStack {
                 Text("设置")
                     .font(.title2.weight(.bold))
                     .foregroundStyle(AppTheme.textPrimary)
                 Spacer()
-                Button {
-                    dismiss()
-                } label: {
+                Button { dismiss() } label: {
                     Image(systemName: "xmark")
                         .font(.caption.weight(.bold))
                         .foregroundStyle(AppTheme.textTertiary)
@@ -1981,339 +2179,493 @@ private struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
             }
+            .padding(24)
 
-            Toggle(isOn: $showAdvancedConfig) {
-                Text("显示高级配置")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    // MARK: 数据 (always visible)
+                    dataSection
+
+                    // MARK: Twitter Likes
+                    settingsSection(
+                        id: .twitter,
+                        icon: "heart.circle",
+                        title: "Twitter Likes",
+                        badge: twitterLikesEnabled ? "已启用" : nil,
+                        badgeColor: AppTheme.accentCyan
+                    ) {
+                        twitterSection
+                    }
+
+                    // MARK: 点击行为
+                    settingsSection(
+                        id: .clickAction,
+                        icon: "cursorarrow.click.2",
+                        title: "点击行为",
+                        badge: clickActionSummary,
+                        badgeColor: AppTheme.accent
+                    ) {
+                        clickActionSection
+                    }
+
+                    // MARK: 外观
+                    settingsSection(
+                        id: .appearance,
+                        icon: "paintpalette",
+                        title: "外观",
+                        trailingAccessory: {
+                            Circle()
+                                .fill(currentTheme.color)
+                                .frame(width: 12, height: 12)
+                        }
+                    ) {
+                        appearanceSection
+                    }
+
+                    // MARK: AI
+                    settingsSection(
+                        id: .ai,
+                        icon: "wand.and.stars",
+                        title: "AI",
+                        badge: aiEnabled ? "已启用" : nil,
+                        badgeColor: AppTheme.accentGreen
+                    ) {
+                        aiSection
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
+            }
+        }
+        .frame(minWidth: 520, minHeight: 360)
+        .background(AppTheme.bgPrimary)
+    }
+
+    // MARK: - Collapsible Section
+
+    @ViewBuilder
+    private func settingsSection<Content: View>(
+        id: SettingsSectionID,
+        icon: String,
+        title: String,
+        badge: String? = nil,
+        badgeColor: Color = AppTheme.accent,
+        @ViewBuilder trailingAccessory: @escaping () -> some View = { EmptyView() },
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        let isExpanded = expandedSection == id
+
+        VStack(alignment: .leading, spacing: 0) {
+            // Header row
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    expandedSection = isExpanded ? nil : id
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: icon)
+                        .font(.subheadline)
+                        .foregroundStyle(isExpanded ? AppTheme.accent : AppTheme.textTertiary)
+                        .frame(width: 20)
+
+                    Text(title)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(AppTheme.textPrimary)
+
+                    if let badge {
+                        Text(badge)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(badgeColor)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(badgeColor.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+
+                    trailingAccessory()
+
+                    Spacer()
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(AppTheme.textTertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            // Content
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 12) {
+                    content()
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 14)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .background(AppTheme.bgInput.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isExpanded ? AppTheme.borderHover : AppTheme.borderSubtle, lineWidth: 1)
+        )
+    }
+
+    // MARK: - 数据
+
+    private var dataSection: some View {
+        HStack(spacing: 12) {
+            Button {
+                isExporting = true
+                exportError = nil
+                let config = NotNowExportConfig(
+                    accentTheme: accentThemeName,
+                    aiEnabled: aiEnabled,
+                    aiAPIURL: aiAPIURL,
+                    aiAPIKey: aiAPIKey,
+                    aiModel: aiModel
+                )
+                Task {
+                    let result = await NotNowBackupService.export(
+                        bookmarks: bookmarks,
+                        categories: categories,
+                        config: config
+                    )
+                    await MainActor.run {
+                        isExporting = false
+                        switch result {
+                        case .success(let zipURL):
+                            let panel = NSSavePanel()
+                            panel.nameFieldStringValue = zipURL.lastPathComponent
+                            panel.allowedContentTypes = [.zip]
+                            panel.canCreateDirectories = true
+                            if panel.runModal() == .OK, let dest = panel.url {
+                                do {
+                                    if FileManager.default.fileExists(atPath: dest.path) {
+                                        try FileManager.default.removeItem(at: dest)
+                                    }
+                                    try FileManager.default.copyItem(at: zipURL, to: dest)
+                                } catch {
+                                    exportError = "保存失败：\(error.localizedDescription)"
+                                }
+                            }
+                        case .failure(let err):
+                            let msg: String
+                            if case .writeFailed(let s) = err { msg = s }
+                            else { msg = String(describing: err) }
+                            exportError = msg
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    if isExporting {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    Text("导出数据与配置")
+                }
+                .ghostButtonStyle()
+            }
+            .buttonStyle(.plain)
+            .disabled(isExporting)
+
+            if let exportError {
+                Text(exportError)
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.accentPink)
+            } else {
+                Text("含书签、分类、封面及当前配置")
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.textTertiary)
+            }
+        }
+    }
+
+    // MARK: - Twitter Likes
+
+    private var twitterSection: some View {
+        Group {
+            Toggle(isOn: $twitterLikesEnabled) {
+                Text("启用 Twitter Likes 导入")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.textPrimary)
+            }
+            .toggleStyle(.switch)
+
+            HStack(spacing: 8) {
+                Image(systemName: "terminal")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textTertiary)
+                TextField("Actionbook BIN Path（绝对路径）", text: $twitterLikesBinPath)
+                    .textFieldStyle(.plain)
+                    .font(.caption.monospaced())
+            }
+            .darkTextField()
+
+            HStack(spacing: 8) {
+                Image(systemName: "link")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textTertiary)
+                TextField("Likes URL（例如：https://x.com/<user>/likes）", text: $twitterLikesURL)
+                    .textFieldStyle(.plain)
+                    .font(.subheadline)
+            }
+            .darkTextField()
+
+            HStack(spacing: 8) {
+                Image(systemName: "number")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textTertiary)
+                Text("每次获取上限")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textSecondary)
+                Spacer()
+                TextField("80", value: $twitterLikesMaxFetchCount, format: .number)
+                    .textFieldStyle(.plain)
+                    .font(.caption.monospaced())
+                    .frame(width: 90)
+                    .multilineTextAlignment(.trailing)
+            }
+            .darkTextField()
+
+            HStack(spacing: 8) {
+                Image(systemName: "timer")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textTertiary)
+                Text("推文页面稳定等待(秒)")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textSecondary)
+                Spacer()
+                TextField("8", value: $twitterLikesTweetSettleSeconds, format: .number)
+                    .textFieldStyle(.plain)
+                    .font(.caption.monospaced())
+                    .frame(width: 90)
+                    .multilineTextAlignment(.trailing)
+            }
+            .darkTextField()
+
+            Text("仅在启用后可导入；导入时只拉最新，命中库内已有链接即停止。")
+                .font(.caption2)
+                .foregroundStyle(AppTheme.textTertiary)
+        }
+    }
+
+    // MARK: - 点击行为
+
+    private var clickActionSummary: String {
+        let linkLabel = ClickAction(rawValue: linkClickAction)?.label ?? "浏览器打开"
+        let snippetLabel = ClickAction(rawValue: snippetClickAction)?.label ?? "复制"
+        return "链接:\(linkLabel) · Snippet:\(snippetLabel)"
+    }
+
+    private var clickActionSection: some View {
+        Group {
+            Text("链接类型")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.textSecondary)
+
+            clickActionPicker(label: "点击", selection: $linkClickAction, scriptBinding: $linkClickScript)
+            clickActionPicker(label: "⌘ 点击", selection: $linkCmdClickAction, scriptBinding: $linkCmdClickScript)
+
+            Divider().background(AppTheme.borderSubtle)
+
+            Text("Snippet 类型")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.textSecondary)
+
+            clickActionPicker(label: "点击", selection: $snippetClickAction, scriptBinding: $snippetClickScript)
+            clickActionPicker(label: "⌘ 点击", selection: $snippetCmdClickAction, scriptBinding: $snippetCmdClickScript)
+
+            Text("自定义脚本使用 {TEXT} 作为占位符（链接为 URL，Snippet 为内容）")
+                .font(.caption2)
+                .foregroundStyle(AppTheme.textTertiary)
+        }
+    }
+
+    // MARK: - 外观
+
+    private var appearanceSection: some View {
+        HStack(spacing: 8) {
+            ForEach(AccentTheme.allCases) { theme in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        accentThemeName = theme.rawValue
+                    }
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(theme.color)
+                            .frame(width: 20, height: 20)
+                        if currentTheme == theme {
+                            Circle()
+                                .stroke(.white, lineWidth: 2)
+                                .frame(width: 14, height: 14)
+                        }
+                    }
+                    .shadow(
+                        color: theme.color.opacity(currentTheme == theme ? 0.6 : 0),
+                        radius: 4
+                    )
+                }
+                .buttonStyle(.plain)
+                .help(theme.label)
+            }
+        }
+    }
+
+    // MARK: - AI
+
+    private var aiSection: some View {
+        Group {
+            Toggle(isOn: $aiEnabled) {
+                Text("启用 AI 生成标题与描述")
                     .foregroundStyle(AppTheme.textPrimary)
             }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("数据")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.textTertiary)
-                    .textCase(.uppercase)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Model")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(AppTheme.textSecondary)
+                TextField("例如：gpt-4.1-mini 或 longcat 对应模型名", text: $aiModel)
+                    .textFieldStyle(.plain)
+                    .font(.subheadline)
+                    .padding(8)
+                    .background(AppTheme.bgInput)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
 
+            VStack(alignment: .leading, spacing: 6) {
+                Text("API Base URL")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(AppTheme.textSecondary)
+                TextField("例如：https://your-endpoint/v1/chat/completions", text: $aiAPIURL)
+                    .textFieldStyle(.plain)
+                    .font(.subheadline)
+                    .padding(8)
+                    .background(AppTheme.bgInput)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("API Key")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(AppTheme.textSecondary)
+                SecureField("用于 Authorization: Bearer ...", text: $aiAPIKey)
+                    .textFieldStyle(.plain)
+                    .font(.subheadline)
+                    .padding(8)
+                    .background(AppTheme.bgInput)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            Text("密钥保存在本机 UserDefaults，仅供本应用访问你的自建 AI 服务。")
+                .font(.caption2)
+                .foregroundStyle(AppTheme.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
                 Button {
-                    isExporting = true
-                    exportError = nil
-                    let config = NotNowExportConfig(
-                        accentTheme: accentThemeName,
-                        aiEnabled: aiEnabled,
-                        aiAPIURL: aiAPIURL,
-                        aiAPIKey: aiAPIKey,
-                        aiModel: aiModel
-                    )
+                    if !aiEnabled {
+                        aiTestMessage = "请先开启上方 AI 开关。"
+                        aiTestLog = ""
+                        return
+                    }
+                    aiTesting = true
+                    aiTestMessage = "测试中，请稍候..."
+                    aiTestLog = ""
+                    let url = "https://example.com"
                     Task {
-                        let result = await NotNowBackupService.export(
-                            bookmarks: bookmarks,
-                            categories: categories,
-                            config: config
+                        let result = await AIService.shared.refineTitleAndDescription(
+                            for: url,
+                            originalTitle: "Test title",
+                            originalDesc: "Test description"
                         )
                         await MainActor.run {
-                            isExporting = false
-                            switch result {
-                            case .success(let zipURL):
-                                let panel = NSSavePanel()
-                                panel.nameFieldStringValue = zipURL.lastPathComponent
-                                panel.allowedContentTypes = [.zip]
-                                panel.canCreateDirectories = true
-                                if panel.runModal() == .OK, let dest = panel.url {
-                                    do {
-                                        if FileManager.default.fileExists(atPath: dest.path) {
-                                            try FileManager.default.removeItem(at: dest)
-                                        }
-                                        try FileManager.default.copyItem(at: zipURL, to: dest)
-                                    } catch {
-                                        exportError = "保存失败：\(error.localizedDescription)"
-                                    }
-                                }
-                            case .failure(let err):
-                                let msg: String
-                                if case .writeFailed(let s) = err { msg = s }
-                                else { msg = String(describing: err) }
-                                exportError = msg
+                            aiTesting = false
+                            if result != nil {
+                                aiTestMessage = "AI 调用成功：服务返回了有效结果。"
+                            } else {
+                                aiTestMessage = "AI 调用未返回有效结果，请检查 URL、Key 或服务端实现。"
                             }
+                            let log = UserDefaults.standard.string(forKey: "ai.lastLog") ?? ""
+                            aiTestLog = log
                         }
                     }
                 } label: {
                     HStack(spacing: 6) {
-                        if isExporting {
-                            ProgressView().controlSize(.small)
+                        if aiTesting {
+                            ProgressView()
+                                .controlSize(.small)
                         } else {
-                            Image(systemName: "square.and.arrow.up")
+                            Image(systemName: "wand.and.stars")
                         }
-                        Text("导出数据与配置")
+                        Text("测试 AI 配置")
                     }
                     .ghostButtonStyle()
                 }
                 .buttonStyle(.plain)
-                .disabled(isExporting)
-
-                if let exportError {
-                    Text(exportError)
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.accentPink)
-                }
-
-                Text("导出为 zip，含书签、分类、封面及当前配置（主题与 AI 设置）。")
-                    .font(.caption2)
-                    .foregroundStyle(AppTheme.textTertiary)
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Twitter Likes 导入")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.textTertiary)
-                        .textCase(.uppercase)
-                    Toggle(isOn: $twitterLikesEnabled) {
-                        Text("启用 Twitter Likes 导入")
-                            .font(.subheadline)
-                            .foregroundStyle(AppTheme.textPrimary)
-                    }
-                    .toggleStyle(.switch)
-                    if showAdvancedConfig {
-                        HStack(spacing: 8) {
-                            Image(systemName: "terminal")
-                                .font(.caption)
-                                .foregroundStyle(AppTheme.textTertiary)
-                            TextField("Actionbook BIN Path（绝对路径）", text: $twitterLikesBinPath)
-                                .textFieldStyle(.plain)
-                                .font(.caption.monospaced())
-                        }
-                        .padding(12)
-                        .background(AppTheme.bgInput)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
-                        )
-                        HStack(spacing: 8) {
-                            Image(systemName: "link")
-                                .font(.caption)
-                                .foregroundStyle(AppTheme.textTertiary)
-                            TextField("Likes URL（例如：https://x.com/<user>/likes）", text: $twitterLikesURL)
-                                .textFieldStyle(.plain)
-                                .font(.subheadline)
-                        }
-                        .padding(12)
-                        .background(AppTheme.bgInput)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
-                        )
-                        HStack(spacing: 8) {
-                            Image(systemName: "number")
-                                .font(.caption)
-                                .foregroundStyle(AppTheme.textTertiary)
-                            Text("每次获取上限")
-                                .font(.caption)
-                                .foregroundStyle(AppTheme.textSecondary)
-                            Spacer()
-                            TextField("80", value: $twitterLikesMaxFetchCount, format: .number)
-                                .textFieldStyle(.plain)
-                                .font(.caption.monospaced())
-                                .frame(width: 90)
-                                .multilineTextAlignment(.trailing)
-                        }
-                        .padding(12)
-                        .background(AppTheme.bgInput)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
-                        )
-                        HStack(spacing: 8) {
-                            Image(systemName: "timer")
-                                .font(.caption)
-                                .foregroundStyle(AppTheme.textTertiary)
-                            Text("推文页面稳定等待(秒)")
-                                .font(.caption)
-                                .foregroundStyle(AppTheme.textSecondary)
-                            Spacer()
-                            TextField("8", value: $twitterLikesTweetSettleSeconds, format: .number)
-                                .textFieldStyle(.plain)
-                                .font(.caption.monospaced())
-                                .frame(width: 90)
-                                .multilineTextAlignment(.trailing)
-                        }
-                        .padding(12)
-                        .background(AppTheme.bgInput)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
-                        )
-                    } else {
-                        Text("高级配置已隐藏，可开启「显示高级配置」后编辑 BIN / URL / 超时参数。")
-                            .font(.caption2)
-                            .foregroundStyle(AppTheme.textTertiary)
-                    }
-                    Text("仅在启用后可导入；导入时只拉最新，命中库内已有链接即停止。")
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.textTertiary)
-                }
+                .disabled(aiTesting)
             }
 
-            VStack(alignment: .leading, spacing: 12) {
-                Text("外观")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.textTertiary)
-                    .textCase(.uppercase)
-
-                HStack(spacing: 8) {
-                    ForEach(AccentTheme.allCases) { theme in
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                accentThemeName = theme.rawValue
-                            }
-                        } label: {
-                            ZStack {
-                                Circle()
-                                    .fill(theme.color)
-                                    .frame(width: 20, height: 20)
-                                if currentTheme == theme {
-                                    Circle()
-                                        .stroke(.white, lineWidth: 2)
-                                        .frame(width: 14, height: 14)
-                                }
-                            }
-                            .shadow(
-                                color: theme.color.opacity(currentTheme == theme ? 0.6 : 0),
-                                radius: 4
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .help(theme.label)
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 12) {
-                Text("AI")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.textTertiary)
-                    .textCase(.uppercase)
-
-                Toggle(isOn: $aiEnabled) {
-                    Text("启用 AI 生成标题与描述")
-                        .foregroundStyle(AppTheme.textPrimary)
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Model")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(AppTheme.textSecondary)
-                    TextField("例如：gpt-4.1-mini 或 longcat 对应模型名", text: $aiModel)
-                        .textFieldStyle(.plain)
-                        .font(.subheadline)
-                        .padding(8)
-                        .background(AppTheme.bgInput)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("API Base URL")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(AppTheme.textSecondary)
-                    TextField("例如：https://your-endpoint/v1/chat/completions", text: $aiAPIURL)
-                        .textFieldStyle(.plain)
-                        .font(.subheadline)
-                        .padding(8)
-                        .background(AppTheme.bgInput)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("API Key")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(AppTheme.textSecondary)
-                    SecureField("用于 Authorization: Bearer ...", text: $aiAPIKey)
-                        .textFieldStyle(.plain)
-                        .font(.subheadline)
-                        .padding(8)
-                        .background(AppTheme.bgInput)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-
-                Text("说明：密钥保存在本机 UserDefaults，仅供本应用访问你的自建 AI 服务。请自行确保后端安全。")
+            if !aiTestMessage.isEmpty {
+                Text(aiTestMessage)
                     .font(.caption2)
-                    .foregroundStyle(AppTheme.textTertiary)
+                    .foregroundStyle(AppTheme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 8) {
-                    Button {
-                        if !aiEnabled {
-                            aiTestMessage = "请先开启上方 AI 开关。"
-                            aiTestLog = ""
-                            return
-                        }
-                        aiTesting = true
-                        aiTestMessage = "测试中，请稍候..."
-                        aiTestLog = ""
-                        let url = "https://example.com"
-                        Task {
-                            let result = await AIService.shared.refineTitleAndDescription(
-                                for: url,
-                                originalTitle: "Test title",
-                                originalDesc: "Test description"
-                            )
-                            await MainActor.run {
-                                aiTesting = false
-                                if result != nil {
-                                    aiTestMessage = "AI 调用成功：服务返回了有效结果。"
-                                } else {
-                                    aiTestMessage = "AI 调用未返回有效结果，请检查 URL、Key 或服务端实现。"
-                                }
-                                let log = UserDefaults.standard.string(forKey: "ai.lastLog") ?? ""
-                                aiTestLog = log
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            if aiTesting {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                Image(systemName: "wand.and.stars")
-                            }
-                            Text("测试 AI 配置")
-                        }
-                        .ghostButtonStyle()
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(aiTesting)
-                }
-
-                if !aiTestMessage.isEmpty {
-                    Text(aiTestMessage)
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if !aiTestLog.isEmpty {
-                    Text("最近一次 AI 请求日志：")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(AppTheme.textTertiary)
-                    ScrollView {
-                        Text(aiTestLog)
-                            .font(.system(size: 11, weight: .regular, design: .monospaced))
-                            .foregroundStyle(AppTheme.textSecondary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(maxHeight: 140)
-                }
             }
 
-                Spacer(minLength: 0)
+            if !aiTestLog.isEmpty {
+                Text("最近一次 AI 请求日志：")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(AppTheme.textTertiary)
+                ScrollView {
+                    Text(aiTestLog)
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(maxHeight: 140)
             }
         }
-        .padding(24)
-        .frame(minWidth: 520, minHeight: 360)
-        .background(AppTheme.bgPrimary)
+    }
+
+    // MARK: - Helpers
+
+    @ViewBuilder
+    private func clickActionPicker(label: String, selection: Binding<String>, scriptBinding: Binding<String>) -> some View {
+        HStack(spacing: 12) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(AppTheme.textSecondary)
+                .frame(width: 50, alignment: .trailing)
+            Picker("", selection: selection) {
+                ForEach(ClickAction.allCases, id: \.rawValue) { action in
+                    Text(action.label).tag(action.rawValue)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 160)
+        }
+
+        if selection.wrappedValue == ClickAction.script.rawValue {
+            HStack(spacing: 8) {
+                Image(systemName: "terminal")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textTertiary)
+                TextField("脚本命令（如: open -a Safari {TEXT}）", text: scriptBinding)
+                    .textFieldStyle(.plain)
+                    .font(.caption.monospaced())
+            }
+            .darkTextField()
+        }
     }
 }

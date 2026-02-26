@@ -21,10 +21,13 @@ struct BookmarkDetailSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     // Cover management
-                    coverManagement
+                    if !bookmark.isSnippet {
+                        coverManagement
+                    }
 
                     // URL
-                    VStack(alignment: .leading, spacing: 6) {
+                    if !bookmark.isSnippet {
+                        VStack(alignment: .leading, spacing: 6) {
                         fieldLabel("链接")
                         HStack(spacing: 8) {
                             HStack(spacing: 8) {
@@ -48,6 +51,7 @@ struct BookmarkDetailSheet: View {
                             .buttonStyle(.plain)
                         }
                     }
+                    }
 
                     // Title
                     VStack(alignment: .leading, spacing: 6) {
@@ -63,6 +67,29 @@ struct BookmarkDetailSheet: View {
                         TextField("描述", text: $bookmark.desc)
                             .darkTextField()
                             .font(.subheadline)
+                    }
+
+                    if bookmark.isSnippet {
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("内容")
+                            TextEditor(text: Binding(
+                                get: { bookmark.snippetText },
+                                set: { bookmark.snippetText = $0 }
+                            ))
+                                .font(.system(.subheadline, design: .monospaced))
+                                .scrollContentBackground(.hidden)
+                                .padding(10)
+                                .frame(minHeight: 180)
+                                .background(AppTheme.bgInput)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                                )
+                        }
+
+
+
                     }
 
                     // Tags
@@ -138,12 +165,15 @@ struct BookmarkDetailSheet: View {
                     // Status toggles
                     HStack(spacing: 12) {
                         statusToggle(
-                            "已读", icon: "checkmark.circle.fill",
-                            isOn: $bookmark.isRead, color: AppTheme.accentGreen
-                        )
-                        statusToggle(
                             "收藏", icon: "star.fill",
-                            isOn: $bookmark.isFavorite, color: .yellow
+                            isOn: Binding(
+                                get: { bookmark.isFavorite },
+                                set: { newValue in
+                                    bookmark.isFavorite = newValue
+                                    bookmark.updatedAt = Date()
+                                    toggleFavoriteCategory(for: bookmark, isFavorite: newValue)
+                                }
+                            ), color: .yellow
                         )
                     }
 
@@ -184,6 +214,7 @@ struct BookmarkDetailSheet: View {
         .onAppear { tagsText = bookmark.tags.joined(separator: ", ") }
         .onChange(of: bookmark.title) { bookmark.updatedAt = Date() }
         .onChange(of: bookmark.desc) { bookmark.updatedAt = Date() }
+        .onChange(of: bookmark.snippetText) { bookmark.updatedAt = Date() }
         .onChange(of: bookmark.notes) { bookmark.updatedAt = Date() }
         .onDisappear {
             coverFetchTask?.cancel()
@@ -295,7 +326,7 @@ struct BookmarkDetailSheet: View {
     private var openWithSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                fieldLabel("打开方式")
+                fieldLabel("自定义脚本")
                 Spacer()
                 Button { showOpenWith = true } label: {
                     HStack(spacing: 4) {
@@ -309,19 +340,7 @@ struct BookmarkDetailSheet: View {
             }
 
             HStack(spacing: 10) {
-                if let app = bookmark.openWithApp, !app.isEmpty {
-                    HStack(spacing: 5) {
-                        Image(systemName: "app.fill")
-                            .font(.caption2)
-                        Text(app)
-                            .font(.caption)
-                    }
-                    .foregroundStyle(AppTheme.accentCyan)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(AppTheme.accentCyan.opacity(0.1))
-                    .clipShape(Capsule())
-                } else if let script = bookmark.openWithScript, !script.isEmpty {
+                if let script = bookmark.openWithScript, !script.isEmpty {
                     HStack(spacing: 5) {
                         Image(systemName: "terminal.fill")
                             .font(.caption2)
@@ -336,9 +355,9 @@ struct BookmarkDetailSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                 } else {
                     HStack(spacing: 5) {
-                        Image(systemName: "globe")
+                        Image(systemName: "arrow.uturn.backward")
                             .font(.caption2)
-                        Text("默认浏览器")
+                        Text("使用全局设置")
                             .font(.caption)
                     }
                     .foregroundStyle(AppTheme.textTertiary)
@@ -432,5 +451,38 @@ struct BookmarkDetailSheet: View {
     private func deleteBookmark() {
         bookmark.modelContext?.delete(bookmark)
         dismiss()
+    }
+
+    private func toggleFavoriteCategory(for bookmark: Bookmark, isFavorite: Bool) {
+        guard let modelContext = bookmark.modelContext else { return }
+        
+        // 查找或创建收藏分类
+        let fetchDescriptor = FetchDescriptor<Category>()
+        let allCategories = (try? modelContext.fetch(fetchDescriptor)) ?? []
+        
+        let favoriteCategory: Category
+        if let existing = allCategories.first(where: { $0.name == "收藏" }) {
+            favoriteCategory = existing
+        } else {
+            favoriteCategory = Category(
+                name: "收藏",
+                icon: "star.fill",
+                colorHex: 0xFFD700, // 金色
+                sortOrder: -1
+            )
+            modelContext.insert(favoriteCategory)
+        }
+        
+        // 更新书签分类
+        if isFavorite {
+            bookmark.category = favoriteCategory
+        } else {
+            // 如果当前在收藏分类中，移除分类
+            if bookmark.category?.id == favoriteCategory.id {
+                bookmark.category = nil
+            }
+        }
+        
+        try? modelContext.save()
     }
 }
