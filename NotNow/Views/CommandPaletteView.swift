@@ -4,7 +4,6 @@ import SwiftUI
 struct CommandPaletteView: View {
     @StateObject private var manager = CommandPaletteManager()
     @Query(sort: \Bookmark.createdAt, order: .reverse) private var bookmarks: [Bookmark]
-    @Query(sort: \Category.sortOrder) private var categories: [Category]
     
     @FocusState private var isSearchFocused: Bool
     @Namespace private var animationNamespace
@@ -16,9 +15,12 @@ struct CommandPaletteView: View {
         }
         .animation(.easeInOut(duration: 0.15), value: manager.isPresented)
         .onAppear(perform: setupNotifications)
-        .onChange(of: bookmarks) { _, _ in handleDataChange() }
-        .onChange(of: categories) { _, _ in handleDataChange() }
-        .onChange(of: manager.isPresented) { _, isPresented in handlePresentationChange(isPresented: isPresented) }
+        .onChange(of: bookmarks) { _, newBookmarks in
+            manager.configure(bookmarks: newBookmarks)
+        }
+        .onChange(of: manager.isPresented) { _, isPresented in
+            handlePresentationChange(isPresented: isPresented)
+        }
     }
     
     // MARK: - View Components
@@ -77,7 +79,7 @@ struct CommandPaletteView: View {
     }
     
     private var searchField: some View {
-        TextField("搜索书签、分类或命令...", text: $manager.searchText)
+        TextField("搜索书签...", text: $manager.searchText)
             .font(.title3.weight(.medium))
             .foregroundStyle(AppTheme.textPrimary)
             .focused($isSearchFocused)
@@ -135,6 +137,13 @@ struct CommandPaletteView: View {
         if items.isEmpty {
             emptyState
         } else {
+            // 分组标题：最近或搜索结果
+            if manager.searchText.isEmpty {
+                sectionHeader(title: "最近的书签")
+            } else {
+                sectionHeader(title: "搜索结果 (\(items.count))")
+            }
+            
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 CommandPaletteRow(
                     item: item,
@@ -148,12 +157,24 @@ struct CommandPaletteView: View {
         }
     }
     
+    private func sectionHeader(title: String) -> some View {
+        HStack {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.textTertiary)
+                .textCase(.uppercase)
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+    }
+    
     private var emptyState: some View {
         VStack(spacing: 12) {
-            Image(systemName: "magnifyingglass")
+            Image(systemName: "bookmark.slash")
                 .font(.system(size: 32))
                 .foregroundStyle(AppTheme.textTertiary)
-            Text("没有找到匹配的项目")
+            Text("没有找到匹配的书签")
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.textSecondary)
         }
@@ -163,15 +184,9 @@ struct CommandPaletteView: View {
     
     // MARK: - Helper Methods
     
-    private func handleDataChange() {
-        if manager.isPresented {
-            manager.rebuildItems()
-        }
-    }
-    
     private func handlePresentationChange(isPresented: Bool) {
         if isPresented {
-            manager.configure(bookmarks: bookmarks, categories: categories)
+            manager.configure(bookmarks: bookmarks)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 isSearchFocused = true
             }
@@ -224,7 +239,6 @@ struct CommandPaletteRow: View {
             iconView
             textContent
             Spacer()
-            shortcutView
             selectionIndicator
         }
         .padding(.horizontal, 16)
@@ -252,30 +266,30 @@ struct CommandPaletteRow: View {
                 .foregroundStyle(AppTheme.textPrimary)
                 .lineLimit(1)
             
-            Text(item.subtitle)
-                .font(.caption)
-                .foregroundStyle(AppTheme.textSecondary)
-                .lineLimit(1)
-        }
-    }
-    
-    @ViewBuilder
-    private var shortcutView: some View {
-        if let shortcut = item.shortcut {
-            Text(shortcut)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(AppTheme.textTertiary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(AppTheme.bgSecondary)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
+            HStack(spacing: 6) {
+                Text(item.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .lineLimit(1)
+                
+                if let categoryName = item.categoryName {
+                    Text("·")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textTertiary)
+                    
+                    Text(categoryName)
+                        .font(.caption)
+                        .foregroundStyle(item.color ?? AppTheme.textSecondary)
+                        .lineLimit(1)
+                }
+            }
         }
     }
     
     @ViewBuilder
     private var selectionIndicator: some View {
         if isSelected {
-            Image(systemName: "chevron.right")
+            Image(systemName: "arrow.turn.down.left")
                 .font(.caption.weight(.bold))
                 .foregroundStyle(AppTheme.accent)
                 .matchedGeometryEffect(id: "selection", in: namespace)
@@ -349,5 +363,3 @@ struct CommandPaletteKeyboardHandler: NSViewRepresentable {
         }
     }
 }
-
-// Command Palette uses the notification defined in NotNowApp.swift
