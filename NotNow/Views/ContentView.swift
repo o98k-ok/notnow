@@ -27,6 +27,11 @@ struct ContentView: View {
     @State private var showImportSheet = false
     @State private var selectedImportSource: ImportSource = .chrome
     @State private var githubStarsInput = ""
+    @AppStorage("twitterLikes.enabled") private var twitterLikesEnabled = false
+    @AppStorage("twitterLikes.binPath") private var twitterLikesBinPath = ""
+    @AppStorage("twitterLikes.likesURL") private var twitterLikesURL = ""
+    @AppStorage("twitterLikes.maxFetchCount") private var twitterLikesMaxFetchCount = 80
+    @AppStorage("twitterLikes.tweetSettleSeconds") private var twitterLikesTweetSettleSeconds = 8
     @State private var notNowZipURL: URL?
     @State private var isBatchMode = false
     @State private var selectedBookmarkIDs: Set<UUID> = []
@@ -97,6 +102,8 @@ struct ContentView: View {
             ImportBookmarksSheet(
                 selectedSource: $selectedImportSource,
                 githubStarsInput: $githubStarsInput,
+                twitterLikesEnabled: twitterLikesEnabled,
+                twitterLikesURL: twitterLikesURL,
                 notNowZipURL: $notNowZipURL,
                 isImporting: isImporting,
                 onCancel: { showImportSheet = false },
@@ -813,7 +820,7 @@ struct ContentView: View {
                     isImporting = false
                 }
                 return
-            case .chrome, .githubStars:
+            case .chrome, .githubStars, .twitterLikes:
                 break
             }
 
@@ -844,6 +851,48 @@ struct ContentView: View {
                     }
                     return
                 }
+            case .twitterLikes:
+                guard twitterLikesEnabled else {
+                    await MainActor.run {
+                        importAlertMessage = "Twitter 导入未启用，请先到设置中开启「启用 Twitter Likes 导入」。"
+                        showImportAlert = true
+                        isImporting = false
+                    }
+                    return
+                }
+                guard let likesURL = TwitterLikesImporter.parseLikesURL(from: twitterLikesURL) else {
+                    await MainActor.run {
+                        importAlertMessage = "请先在设置中填写有效的 Likes URL（如 https://x.com/<用户名>/likes）。"
+                        showImportAlert = true
+                        isImporting = false
+                    }
+                    return
+                }
+                let binPath = twitterLikesBinPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                if binPath.isEmpty {
+                    await MainActor.run {
+                        importAlertMessage = "请先在设置中填写 Actionbook BIN Path。"
+                        showImportAlert = true
+                        isImporting = false
+                    }
+                    return
+                }
+                let result = await TwitterLikesImporter.loadAllEntries(
+                    likesURL: likesURL,
+                    actionbookBinPath: binPath,
+                    maxFetchCount: max(1, twitterLikesMaxFetchCount)
+                )
+                switch result {
+                case .success(let list):
+                    entries = list
+                case .failure(let err):
+                    await MainActor.run {
+                        importAlertMessage = "Twitter Likes 获取失败：\(err.localizedDescription)"
+                        showImportAlert = true
+                        isImporting = false
+                    }
+                    return
+                }
             case .notNow:
                 return
             }
@@ -859,7 +908,9 @@ struct ContentView: View {
                 var existingURLs = Set(bookmarks.map { $0.url.lowercased() })
                 var importedCount = 0
                 var skippedCount = 0
+                var stoppedAtExisting = false
                 var importedItems: [Bookmark] = []
+                let stopOnFirstExisting = source == .twitterLikes
 
                 for entry in entries {
                     let normalized = entry.url.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -873,6 +924,10 @@ struct ContentView: View {
                     }
                     let key = normalized.lowercased()
                     if existingURLs.contains(key) {
+                        if stopOnFirstExisting {
+                            stoppedAtExisting = true
+                            break
+                        }
                         skippedCount += 1
                         continue
                     }
@@ -895,18 +950,28 @@ struct ContentView: View {
                 }
 
                 let categoryName = selectedCategory?.name ?? "未分类"
-                importAlertMessage = "已导入 \(importedCount) 条到「\(categoryName)」，跳过 \(skippedCount) 条（重复或无效）。正在后台补全标题和封面。"
+                if source == .twitterLikes {
+                    let stopText = stoppedAtExisting ? "，命中已有记录后已停止增量同步" : ""
+                    importAlertMessage = "已导入 \(importedCount) 条到「\(categoryName)」，跳过 \(skippedCount) 条（无效）\(stopText)。正在后台补全标题和封面。"
+                } else {
+                    importAlertMessage = "已导入 \(importedCount) 条到「\(categoryName)」，跳过 \(skippedCount) 条（重复或无效）。正在后台补全标题和封面。"
+                }
                 showImportAlert = true
                 isImporting = false
 
                 Task {
-                    await enrichImportedBookmarks(importedItems)
+                    await enrichImportedBookmarks(importedItems, source: source)
                 }
             }
         }
     }
 
-    private func enrichImportedBookmarks(_ importedItems: [Bookmark]) async {
+    private func enrichImportedBookmarks(_ importedItems: [Bookmark], source: ImportSource) async {
+        if source == .twitterLikes {
+            await enrichTwitterImportedBookmarks(importedItems)
+            return
+        }
+
         for bm in importedItems {
             let metadata = await MetadataService.shared.fetch(from: bm.url, fetchImage: true)
             await MainActor.run {
@@ -969,6 +1034,89 @@ struct ContentView: View {
                 }
             }
         }
+        await MainActor.run {
+            try? modelContext.save()
+        }
+    }
+
+    private func enrichTwitterImportedBookmarks(_ importedItems: [Bookmark]) async {
+        let binPath = twitterLikesBinPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let settle = max(1, twitterLikesTweetSettleSeconds)
+        for bm in importedItems {
+            let extracted = await TwitterTweetExtractor.extractTweet(
+                tweetURL: bm.url,
+                actionbookBinPath: binPath,
+                settleSeconds: settle
+            )
+
+            let tweetText = (extracted?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let truncatedDesc = tweetText.isEmpty ? "" : String(tweetText.prefix(280))
+
+            await MainActor.run {
+                if bm.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if !tweetText.isEmpty {
+                        bm.title = tweetText
+                    } else if let fallback = extracted?.fallbackTitle, !fallback.isEmpty {
+                        bm.title = fallback
+                    } else {
+                        bm.title = "X 推文"
+                    }
+                }
+                if !truncatedDesc.isEmpty {
+                    bm.desc = truncatedDesc
+                }
+                if let imageURL = extracted?.imageURL, !imageURL.isEmpty {
+                    bm.coverURL = imageURL
+                }
+            }
+
+            if let imageURL = extracted?.imageURL, !imageURL.isEmpty {
+                let imageData = await MetadataService.shared.fetchImageData(from: imageURL)
+                await MainActor.run {
+                    if bm.coverData == nil {
+                        bm.coverData = imageData
+                    }
+                }
+            }
+
+            if let ai = await AIService.shared.refineTitleAndDescription(
+                for: bm.url,
+                originalTitle: await MainActor.run { bm.title },
+                originalDesc: await MainActor.run { bm.desc }
+            ) {
+                await MainActor.run {
+                    if let t = ai.title,
+                        !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    {
+                        bm.title = t
+                    }
+                    if let tagList = ai.tags, !tagList.isEmpty {
+                        let normalized = tagList
+                            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            .filter { !$0.isEmpty }
+                        if !normalized.isEmpty {
+                            var seen = Set<String>()
+                            let existing = bm.tags
+                            let combined = (existing + normalized).filter { tag in
+                                let lower = tag.lowercased()
+                                if seen.contains(lower) { return false }
+                                seen.insert(lower)
+                                return true
+                            }
+                            bm.tags = combined
+                        }
+                    }
+                    bm.updatedAt = Date()
+                }
+            } else {
+                await MainActor.run {
+                    bm.updatedAt = Date()
+                }
+            }
+
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+        }
+
         await MainActor.run {
             try? modelContext.save()
         }
@@ -1094,6 +1242,7 @@ private struct HoverPreviewCard: View {
 private enum ImportSource: String, CaseIterable, Identifiable {
     case chrome
     case githubStars
+    case twitterLikes
     case notNow
 
     var id: String { rawValue }
@@ -1102,6 +1251,7 @@ private enum ImportSource: String, CaseIterable, Identifiable {
         switch self {
         case .chrome: return "Chrome"
         case .githubStars: return "GitHub Stars"
+        case .twitterLikes: return "Twitter Likes"
         case .notNow: return "NotNow 备份"
         }
     }
@@ -1112,6 +1262,8 @@ private enum ImportSource: String, CaseIterable, Identifiable {
             return "从 Chrome 浏览器书签中导入数据。"
         case .githubStars:
             return "从 GitHub 星标仓库列表导入，需提供用户名或 profile 链接。"
+        case .twitterLikes:
+            return "从 X(Twitter) 点赞流增量导入，遇到已存在链接即停止。"
         case .notNow:
             return "从本机 NotNow 导出的 .zip 备份恢复书签、分类与配置。"
         }
@@ -1121,6 +1273,7 @@ private enum ImportSource: String, CaseIterable, Identifiable {
         switch self {
         case .chrome: return "globe"
         case .githubStars: return "star.circle"
+        case .twitterLikes: return "heart.circle"
         case .notNow: return "doc.zipper"
         }
     }
@@ -1134,6 +1287,8 @@ private struct ImportEntry {
 private struct ImportBookmarksSheet: View {
     @Binding var selectedSource: ImportSource
     @Binding var githubStarsInput: String
+    let twitterLikesEnabled: Bool
+    let twitterLikesURL: String
     @Binding var notNowZipURL: URL?
     let isImporting: Bool
     let onCancel: () -> Void
@@ -1229,6 +1384,34 @@ private struct ImportBookmarksSheet: View {
                     }
                 }
 
+                if selectedSource == .twitterLikes {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Twitter Likes")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.textTertiary)
+                            .textCase(.uppercase)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(twitterLikesEnabled ? "已启用：将使用设置中的 BIN Path 与 Likes URL。" : "未启用：请先到设置中开启 Twitter Likes 导入。")
+                                .font(.caption)
+                                .foregroundStyle(twitterLikesEnabled ? AppTheme.textSecondary : AppTheme.accentPink)
+                            Text(twitterLikesURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Likes URL: (未设置)" : "Likes URL: \(twitterLikesURL)")
+                                .font(.caption2)
+                                .foregroundStyle(AppTheme.textTertiary)
+                                .lineLimit(2)
+                        }
+                        .padding(12)
+                        .background(AppTheme.bgInput)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                        )
+                        Text("导入规则：只拉最新，命中库内已有链接即停止。")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.textTertiary)
+                    }
+                }
+
                 if selectedSource == .notNow {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("备份文件 (.zip)")
@@ -1303,7 +1486,11 @@ private struct ImportBookmarksSheet: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.defaultAction)
-                .disabled(isImporting || (selectedSource == .notNow && notNowZipURL == nil))
+                .disabled(
+                    isImporting
+                        || (selectedSource == .notNow && notNowZipURL == nil)
+                        || (selectedSource == .twitterLikes && !twitterLikesEnabled)
+                )
             }
             .padding(20)
             .background(AppTheme.bgSecondary.opacity(0.5))
@@ -1473,6 +1660,278 @@ private enum GitHubStarsImporter {
     }
 }
 
+// MARK: - Twitter Likes (External Command / Actionbook)
+
+private enum TwitterLikesImporterError: Error {
+    case message(String)
+    var localizedDescription: String {
+        if case .message(let s) = self { return s }
+        return ""
+    }
+}
+
+private enum TwitterLikesImporter {
+    static func parseLikesURL(from input: String) -> String? {
+        let raw = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        guard let url = URL(string: raw.hasPrefix("http") ? raw : "https://" + raw),
+              let host = url.host?.lowercased()
+        else { return nil }
+        guard host == "x.com" || host == "twitter.com" || host.hasSuffix(".x.com") || host.hasSuffix(".twitter.com") else {
+            return nil
+        }
+        let path = url.path.lowercased()
+        guard path.hasSuffix("/likes") else { return nil }
+        return url.absoluteString
+    }
+
+    static func loadAllEntries(likesURL: String, actionbookBinPath: String, maxFetchCount: Int) async -> Result<[ImportEntry], TwitterLikesImporterError> {
+        guard let scriptPath = scriptPath() else {
+            return .failure(.message("未找到脚本 scripts/twitter_likes_actionbook.sh。"))
+        }
+        let safeCount = max(1, maxFetchCount)
+        let command = "ACTIONBOOK_BIN=\(shellSingleQuote(actionbookBinPath)) sh \(shellSingleQuote(scriptPath)) \(shellSingleQuote(likesURL)) \(safeCount)"
+        let result = await runShell(command: command)
+        switch result {
+        case .failure(let err):
+            return .failure(err)
+        case .success(let output):
+            let lines = output
+                .split(whereSeparator: { $0.isNewline })
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if lines.isEmpty {
+                return .success([])
+            }
+            if let json = parseJSONEntries(output: output), !json.isEmpty {
+                return .success(json)
+            }
+            let entries = parseTextEntries(lines: lines)
+            if entries.isEmpty {
+                return .failure(.message("命令执行成功，但无法解析输出。请输出 JSON 数组或每行一个 URL。"))
+            }
+            return .success(entries)
+        }
+    }
+
+    private static func parseJSONEntries(output: String) -> [ImportEntry]? {
+        guard let data = output.data(using: .utf8) else { return nil }
+        if let objects = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            var result: [ImportEntry] = []
+            for obj in objects {
+                let url = (obj["url"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if url.isEmpty { continue }
+                let title = (obj["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                result.append(ImportEntry(title: title, url: url))
+            }
+            return result
+        }
+        return nil
+    }
+
+    private static func parseTextEntries(lines: [String]) -> [ImportEntry] {
+        var result: [ImportEntry] = []
+        for line in lines {
+            if line.hasPrefix("#") { continue }
+            if line.contains("\t") {
+                let comps = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+                let title = String(comps[0]).trimmingCharacters(in: .whitespacesAndNewlines)
+                let url = comps.count > 1
+                    ? String(comps[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    : ""
+                if !url.isEmpty { result.append(ImportEntry(title: title, url: url)) }
+                continue
+            }
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
+                result.append(ImportEntry(title: "", url: trimmed))
+            }
+        }
+        return result
+    }
+
+    private static func runShell(command: String) async -> Result<String, TwitterLikesImporterError> {
+        await withCheckedContinuation { continuation in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", command]
+
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(returning: .failure(.message("启动命令失败：\(error.localizedDescription)")))
+                return
+            }
+
+            process.terminationHandler = { proc in
+                let outData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                let out = String(data: outData, encoding: .utf8) ?? ""
+                let err = String(data: errData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+                if proc.terminationStatus != 0 {
+                    if err.isEmpty {
+                        continuation.resume(returning: .failure(.message("命令失败，退出码 \(proc.terminationStatus)。")))
+                    } else {
+                        continuation.resume(returning: .failure(.message(err)))
+                    }
+                    return
+                }
+                continuation.resume(returning: .success(out))
+            }
+        }
+    }
+
+    private static func shellSingleQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
+    private static func scriptPath() -> String? {
+        let fm = FileManager.default
+        var candidates: [String] = []
+
+        let cwdCandidate = URL(fileURLWithPath: fm.currentDirectoryPath)
+            .appendingPathComponent("scripts/twitter_likes_actionbook.sh")
+            .path(percentEncoded: false)
+        candidates.append(cwdCandidate)
+
+        // Build-time source path hint (useful when app cwd is not repository root).
+        let sourceBased = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("scripts/twitter_likes_actionbook.sh")
+            .path(percentEncoded: false)
+        candidates.append(sourceBased)
+
+        // Workspace fallback for current project.
+        candidates.append("/Users/shadow/Documents/code/notnow/scripts/twitter_likes_actionbook.sh")
+
+        for path in candidates where fm.fileExists(atPath: path) { return path }
+
+        if let bundleCandidate = Bundle.main.resourceURL?
+            .appendingPathComponent("scripts/twitter_likes_actionbook.sh"),
+           fm.fileExists(atPath: bundleCandidate.path(percentEncoded: false))
+        {
+            return bundleCandidate.path(percentEncoded: false)
+        }
+
+        return nil
+    }
+}
+
+private struct ExtractedTweetData {
+    let text: String
+    let imageURL: String?
+    let fallbackTitle: String?
+}
+
+private enum TwitterTweetExtractor {
+    private static let maxAttempts = 4
+
+    static func extractTweet(tweetURL: String, actionbookBinPath: String, settleSeconds: Int) async -> ExtractedTweetData? {
+        let binPath = actionbookBinPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !binPath.isEmpty else { return nil }
+        let settle = max(1, settleSeconds)
+        var debugLines: [String] = []
+        debugLines.append("extract start: \(tweetURL)")
+        for _ in 0..<maxAttempts {
+            guard let scriptPath = scriptPath() else {
+                storeDebugLog("extract failed: missing scripts/twitter_tweet_extract.sh")
+                return nil
+            }
+            let command = "ACTIONBOOK_BIN=\(shellSingleQuote(binPath)) TWITTER_TWEET_SETTLE_SECONDS=\(settle) sh \(shellSingleQuote(scriptPath)) \(shellSingleQuote(tweetURL))"
+            guard let output = await runShell(command: command) else {
+                debugLines.append("attempt failed: script run")
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                continue
+            }
+            let jsonString = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let data = jsonString.data(using: .utf8),
+                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                debugLines.append("attempt failed: json parse")
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                continue
+            }
+
+            let text = ((obj["text"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let imageURLRaw = ((obj["image_url"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let titleRaw = ((obj["title"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            debugLines.append("attempt ok: text=\(text.count) media=\(imageURLRaw.isEmpty ? 0 : 1)")
+            if !text.isEmpty || !imageURLRaw.isEmpty {
+                storeDebugLog(debugLines.joined(separator: "\n"))
+                return ExtractedTweetData(
+                    text: text,
+                    imageURL: imageURLRaw.isEmpty ? nil : imageURLRaw,
+                    fallbackTitle: titleRaw.isEmpty ? nil : titleRaw
+                )
+            }
+
+            debugLines.append("attempt empty payload")
+            try? await Task.sleep(nanoseconds: 900_000_000)
+        }
+        storeDebugLog(debugLines.joined(separator: "\n"))
+        return nil
+    }
+
+    private static func runShell(command: String) async -> String? {
+        await withCheckedContinuation { continuation in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", command]
+            let out = Pipe()
+            let err = Pipe()
+            process.standardOutput = out
+            process.standardError = err
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(returning: nil)
+                return
+            }
+            process.terminationHandler = { proc in
+                let outData = out.fileHandleForReading.readDataToEndOfFile()
+                if proc.terminationStatus == 0 {
+                    continuation.resume(returning: String(data: outData, encoding: .utf8))
+                } else {
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
+    }
+
+    private static func shellSingleQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
+    private static func scriptPath() -> String? {
+        let fm = FileManager.default
+        let paths = [
+            URL(fileURLWithPath: fm.currentDirectoryPath)
+                .appendingPathComponent("scripts/twitter_tweet_extract.sh")
+                .path(percentEncoded: false),
+            URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("scripts/twitter_tweet_extract.sh")
+                .path(percentEncoded: false),
+            "/Users/shadow/Documents/code/notnow/scripts/twitter_tweet_extract.sh",
+        ]
+        for p in paths where fm.fileExists(atPath: p) { return p }
+        return nil
+    }
+
+    private static func storeDebugLog(_ text: String) {
+        UserDefaults.standard.set(text, forKey: "twitterLikes.lastExtractLog")
+    }
+}
+
 // MARK: - Settings
 
 private struct SettingsView: View {
@@ -1486,6 +1945,12 @@ private struct SettingsView: View {
     @AppStorage("ai.apiURL") private var aiAPIURL = ""
     @AppStorage("ai.apiKey") private var aiAPIKey = ""
     @AppStorage("ai.model") private var aiModel = ""
+    @AppStorage("twitterLikes.enabled") private var twitterLikesEnabled = false
+    @AppStorage("twitterLikes.binPath") private var twitterLikesBinPath = ""
+    @AppStorage("twitterLikes.likesURL") private var twitterLikesURL = ""
+    @AppStorage("twitterLikes.maxFetchCount") private var twitterLikesMaxFetchCount = 80
+    @AppStorage("twitterLikes.tweetSettleSeconds") private var twitterLikesTweetSettleSeconds = 8
+    @AppStorage("settings.showAdvancedConfig") private var showAdvancedConfig = false
 
     @State private var aiTesting = false
     @State private var aiTestMessage = ""
@@ -1517,6 +1982,13 @@ private struct SettingsView: View {
                 .buttonStyle(.plain)
             }
 
+            Toggle(isOn: $showAdvancedConfig) {
+                Text("显示高级配置")
+                    .foregroundStyle(AppTheme.textPrimary)
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("数据")
                     .font(.caption.weight(.semibold))
@@ -1588,6 +2060,100 @@ private struct SettingsView: View {
                 Text("导出为 zip，含书签、分类、封面及当前配置（主题与 AI 设置）。")
                     .font(.caption2)
                     .foregroundStyle(AppTheme.textTertiary)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Twitter Likes 导入")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.textTertiary)
+                        .textCase(.uppercase)
+                    Toggle(isOn: $twitterLikesEnabled) {
+                        Text("启用 Twitter Likes 导入")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.textPrimary)
+                    }
+                    .toggleStyle(.switch)
+                    if showAdvancedConfig {
+                        HStack(spacing: 8) {
+                            Image(systemName: "terminal")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.textTertiary)
+                            TextField("Actionbook BIN Path（绝对路径）", text: $twitterLikesBinPath)
+                                .textFieldStyle(.plain)
+                                .font(.caption.monospaced())
+                        }
+                        .padding(12)
+                        .background(AppTheme.bgInput)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                        )
+                        HStack(spacing: 8) {
+                            Image(systemName: "link")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.textTertiary)
+                            TextField("Likes URL（例如：https://x.com/<user>/likes）", text: $twitterLikesURL)
+                                .textFieldStyle(.plain)
+                                .font(.subheadline)
+                        }
+                        .padding(12)
+                        .background(AppTheme.bgInput)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                        )
+                        HStack(spacing: 8) {
+                            Image(systemName: "number")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.textTertiary)
+                            Text("每次获取上限")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.textSecondary)
+                            Spacer()
+                            TextField("80", value: $twitterLikesMaxFetchCount, format: .number)
+                                .textFieldStyle(.plain)
+                                .font(.caption.monospaced())
+                                .frame(width: 90)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        .padding(12)
+                        .background(AppTheme.bgInput)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                        )
+                        HStack(spacing: 8) {
+                            Image(systemName: "timer")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.textTertiary)
+                            Text("推文页面稳定等待(秒)")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.textSecondary)
+                            Spacer()
+                            TextField("8", value: $twitterLikesTweetSettleSeconds, format: .number)
+                                .textFieldStyle(.plain)
+                                .font(.caption.monospaced())
+                                .frame(width: 90)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        .padding(12)
+                        .background(AppTheme.bgInput)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                        )
+                    } else {
+                        Text("高级配置已隐藏，可开启「显示高级配置」后编辑 BIN / URL / 超时参数。")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.textTertiary)
+                    }
+                    Text("仅在启用后可导入；导入时只拉最新，命中库内已有链接即停止。")
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.textTertiary)
+                }
             }
 
             VStack(alignment: .leading, spacing: 12) {
@@ -1742,11 +2308,12 @@ private struct SettingsView: View {
                 }
             }
 
-            Spacer()
+                Spacer(minLength: 0)
+                }
+            }
         }
         .padding(24)
         .frame(minWidth: 520, minHeight: 360)
         .background(AppTheme.bgPrimary)
     }
 }
-
