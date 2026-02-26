@@ -20,11 +20,17 @@ struct NotNowApp: App {
                 .keyboardShortcut("n")
             }
             CommandGroup(after: .textEditing) {
+                Button("命令面板") {
+                    NotificationCenter.default.post(
+                        name: .openCommandPalette, object: nil)
+                }
+                .keyboardShortcut("k", modifiers: [.command])
+                
                 Button("搜索书签") {
                     NotificationCenter.default.post(
                         name: .focusSearch, object: nil)
                 }
-                .keyboardShortcut("k", modifiers: [.command])
+                .keyboardShortcut("f", modifiers: [.command, .option])
             }
             CommandGroup(after: .appSettings) {
                 Button("偏好设置…") {
@@ -41,4 +47,5 @@ extension Notification.Name {
     static let addBookmark = Notification.Name("addBookmark")
     static let focusSearch = Notification.Name("focusSearch")
     static let showSettings = Notification.Name("showSettings")
+    static let openCommandPalette = Notification.Name("openCommandPalette")
 }

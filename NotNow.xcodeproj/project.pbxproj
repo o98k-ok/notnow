@@ -21,6 +21,8 @@
 		B7D2E1F93A4C5B6E8D9E0F1A /* NotNowBackupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8E3D4A5B6F7E2D1C0A9B8E7 /* NotNowBackupService.swift */; };
 		EFC51328721A94F2D59186C8 /* OpenService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 691FF261CFE1DD8AFE42BD70 /* OpenService.swift */; };
 		F2AA9FFA7C46FB04644CAE52 /* BookmarkCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B39BF9801D0262995AA7CE48 /* BookmarkCardView.swift */; };
+		1A2B3C4D5E6F7A8B9C0D1E2F /* CommandPaletteItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B3C4D5E6F7A8B9C0D1E2F3A /* CommandPaletteItem.swift */; };
+		2B3C4D5E6F7A8B9C0D1E2F3B /* CommandPaletteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C4D5E6F7A8B9C0D1E2F3A4B /* CommandPaletteView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,6 +42,8 @@
 		A9E43F5C0C52A2E19ADAA632 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		B14238667166C0E979792B1E /* Category.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Category.swift; sourceTree = "<group>"; };
 		B39BF9801D0262995AA7CE48 /* BookmarkCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookmarkCardView.swift; sourceTree = "<group>"; };
+		2B3C4D5E6F7A8B9C0D1E2F3A /* CommandPaletteItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPaletteItem.swift; sourceTree = "<group>"; };
+		3C4D5E6F7A8B9C0D1E2F3A4B /* CommandPaletteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPaletteView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -53,6 +57,8 @@
 				43EE9262209AB610ED8BAEB1 /* ContentView.swift */,
 				50BB4E5B583BA233D7010F66 /* OpenWithSheet.swift */,
 				A9E43F5C0C52A2E19ADAA632 /* Theme.swift */,
+				2B3C4D5E6F7A8B9C0D1E2F3A /* CommandPaletteItem.swift */,
+				3C4D5E6F7A8B9C0D1E2F3A4B /* CommandPaletteView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -191,6 +197,8 @@
 				EFC51328721A94F2D59186C8 /* OpenService.swift in Sources */,
 				8E1E2724304469F27D7FF14F /* OpenWithSheet.swift in Sources */,
 				71915E95C5D279EBA4A92D54 /* Theme.swift in Sources */,
+				1A2B3C4D5E6F7A8B9C0D1E2F /* CommandPaletteItem.swift in Sources */,
+				2B3C4D5E6F7A8B9C0D1E2F3B /* CommandPaletteView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

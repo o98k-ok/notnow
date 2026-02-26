@@ -77,6 +77,9 @@ struct ContentView: View {
                 Divider().background(AppTheme.borderSubtle)
                 mainContent
             }
+            
+            // Command Palette
+            CommandPaletteView()
         }
         .sheet(isPresented: $showAddSheet) {
             AddBookmarkSheet()
@@ -132,6 +135,24 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .showSettings)) { _ in
             showSettings = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showImport)) { _ in
+            showImportSheet = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .selectCategory)) { notification in
+            if let categoryID = notification.object as? UUID,
+               let category = categories.first(where: { $0.id == categoryID }) {
+                selection = .category(category.id)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .selectSidebar)) { notification in
+            if let sidebarSelection = notification.object as? SidebarSelection {
+                selection = sidebarSelection
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showAddCategory)) { _ in
+            editingCategory = nil
+            showCategorySheet = true
         }
     }
 
