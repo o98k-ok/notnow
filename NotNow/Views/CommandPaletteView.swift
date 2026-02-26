@@ -6,15 +6,26 @@ struct CommandPaletteView: View {
     @Query(sort: \Bookmark.createdAt, order: .reverse) private var bookmarks: [Bookmark]
     
     @FocusState private var isSearchFocused: Bool
-    @Namespace private var animationNamespace
+    @State private var keyboardMonitor: Any?
     
     var body: some View {
         ZStack {
-            backgroundOverlay
-            commandPaletteContent
+            // 背景遮罩
+            if manager.isPresented {
+                Color.black.opacity(0.5)
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+                    .onTapGesture { manager.close() }
+            }
+            
+            // 命令面板
+            if manager.isPresented {
+                commandPalette
+                    .transition(.scale(scale: 0.95).combined(with: .opacity))
+            }
         }
         .animation(.easeInOut(duration: 0.15), value: manager.isPresented)
-        .onAppear(perform: setupNotifications)
+        .onAppear { setupNotifications() }
         .onChange(of: bookmarks) { _, newBookmarks in
             manager.configure(bookmarks: newBookmarks)
         }
@@ -23,143 +34,97 @@ struct CommandPaletteView: View {
         }
     }
     
-    // MARK: - View Components
+    // MARK: - Command Palette
     
-    @ViewBuilder
-    private var backgroundOverlay: some View {
-        if manager.isPresented {
-            Color.black.opacity(0.5)
-                .ignoresSafeArea()
-                .transition(.opacity)
-                .onTapGesture { manager.close() }
+    private var commandPalette: some View {
+        VStack(spacing: 0) {
+            searchBar
+            resultsList
         }
+        .frame(width: 600)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(AppTheme.bgElevated)
+                .shadow(color: Color.black.opacity(0.3), radius: 20, x: 0, y: 10)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(AppTheme.borderHover, lineWidth: 1)
+        )
     }
     
-    @ViewBuilder
-    private var commandPaletteContent: some View {
-        if manager.isPresented {
-            VStack(spacing: 0) {
-                searchBar
-                resultsList
-            }
-            .frame(width: 600, height: 500)
-            .background(paletteBackground)
-            .transition(.scale(scale: 0.95).combined(with: .opacity))
-        }
-    }
-    
-    private var paletteBackground: some View {
-        RoundedRectangle(cornerRadius: 12)
-            .fill(AppTheme.bgElevated)
-            .shadow(color: Color.black.opacity(0.3), radius: 20, x: 0, y: 10)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(AppTheme.borderHover, lineWidth: 1)
-            )
-    }
-    
-    // MARK: - 搜索栏
+    // MARK: - Search Bar
     
     private var searchBar: some View {
         HStack(spacing: 12) {
-            searchIcon
-            searchField
-            clearButton
-            shortcutHint
+            Image(systemName: "magnifyingglass")
+                .font(.title3)
+                .foregroundStyle(AppTheme.textTertiary)
+            
+            TextField("搜索书签...", text: $manager.searchText)
+                .font(.title3.weight(.medium))
+                .foregroundStyle(AppTheme.textPrimary)
+                .focused($isSearchFocused)
+                .textFieldStyle(.plain)
+                .onSubmit { manager.executeSelected() }
+            
+            if !manager.searchText.isEmpty {
+                Button { manager.searchText = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(AppTheme.textTertiary)
+                }
+                .buttonStyle(.plain)
+            }
+            
+            Text("↵")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.textTertiary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(AppTheme.bgPrimary)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
         .background(AppTheme.bgSecondary)
     }
     
-    private var searchIcon: some View {
-        Image(systemName: "magnifyingglass")
-            .font(.title3)
-            .foregroundStyle(AppTheme.textTertiary)
-    }
-    
-    private var searchField: some View {
-        TextField("搜索书签...", text: $manager.searchText)
-            .font(.title3.weight(.medium))
-            .foregroundStyle(AppTheme.textPrimary)
-            .focused($isSearchFocused)
-            .textFieldStyle(.plain)
-            .onSubmit { manager.executeSelected() }
-    }
-    
-    @ViewBuilder
-    private var clearButton: some View {
-        if !manager.searchText.isEmpty {
-            Button { manager.searchText = "" } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(AppTheme.textTertiary)
-            }
-            .buttonStyle(.plain)
-        }
-    }
-    
-    private var shortcutHint: some View {
-        HStack(spacing: 4) {
-            Text("↵")
-            Text("打开")
-        }
-        .font(.caption.weight(.medium))
-        .foregroundStyle(AppTheme.textTertiary)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(AppTheme.bgPrimary)
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-    }
-    
-    // MARK: - 结果列表
+    // MARK: - Results List
     
     private var resultsList: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    resultsContent
+            List {
+                let items = manager.filteredItems
+                
+                if items.isEmpty {
+                    emptyState
+                } else {
+                    // Section header
+                    sectionHeader(items: items)
+                    
+                    // Bookmark items
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        bookmarkRow(item: item, index: index)
+                            .id(item.id)
+                            .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                    }
                 }
-                .padding(.vertical, 8)
             }
+            .listStyle(.plain)
+            .frame(height: min(CGFloat(manager.filteredItems.count) * 56 + 40, 400))
+            .background(AppTheme.bgPrimary)
             .onChange(of: manager.selectedIndex) { _, newIndex in
                 scrollToSelected(proxy: proxy, index: newIndex)
             }
         }
-        .frame(minHeight: 100, maxHeight: 400)
-        .background(AppTheme.bgPrimary)
     }
     
-    @ViewBuilder
-    private var resultsContent: some View {
-        let items = manager.filteredItems
-        
-        if items.isEmpty {
-            emptyState
-        } else {
-            // 分组标题：最近或搜索结果
-            if manager.searchText.isEmpty {
-                sectionHeader(title: "最近的书签")
-            } else {
-                sectionHeader(title: "搜索结果 (\(items.count))")
-            }
-            
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                CommandPaletteRow(
-                    item: item,
-                    isSelected: index == manager.selectedIndex,
-                    namespace: animationNamespace
-                )
-                .id(item.id)
-                .onTapGesture { handleItemTap(index: index, item: item) }
-                .onHover { isHovered in handleItemHover(index: index, isHovered: isHovered) }
-            }
-        }
-    }
-    
-    private func sectionHeader(title: String) -> some View {
+    private func sectionHeader(items: [CommandPaletteItem]) -> some View {
         HStack {
-            Text(title)
+            Text(manager.searchText.isEmpty ? "最近的书签" : "找到 \(items.count) 个结果")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(AppTheme.textTertiary)
                 .textCase(.uppercase)
@@ -167,6 +132,71 @@ struct CommandPaletteView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
+        .listRowInsets(EdgeInsets())
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+    
+    private func bookmarkRow(item: CommandPaletteItem, index: Int) -> some View {
+        Button {
+            manager.execute(item: item)
+        } label: {
+            HStack(spacing: 12) {
+                // Icon
+                ZStack {
+                    Circle()
+                        .fill(index == manager.selectedIndex ? AppTheme.accent.opacity(0.25) : (item.color?.opacity(0.15) ?? AppTheme.bgSecondary))
+                        .frame(width: 36, height: 36)
+                    
+                    Image(systemName: item.icon)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(index == manager.selectedIndex ? AppTheme.accent : (item.color ?? AppTheme.textSecondary))
+                }
+                
+                // Title and subtitle
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.title)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .lineLimit(1)
+                    
+                    HStack(spacing: 6) {
+                        Text(item.subtitle)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.textSecondary)
+                            .lineLimit(1)
+                        
+                        if let categoryName = item.categoryName {
+                            Text("·")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.textTertiary)
+                            
+                            Text(categoryName)
+                                .font(.caption)
+                                .foregroundStyle(item.color ?? AppTheme.textSecondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                
+                Spacer()
+                
+                // Selection indicator
+                if index == manager.selectedIndex {
+                    Image(systemName: "arrow.turn.down.left")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(AppTheme.accent)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(index == manager.selectedIndex ? AppTheme.accent.opacity(0.15) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
     }
     
     private var emptyState: some View {
@@ -180,6 +210,9 @@ struct CommandPaletteView: View {
         }
         .frame(maxWidth: .infinity, minHeight: 120)
         .padding(.top, 40)
+        .listRowInsets(EdgeInsets())
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
     
     // MARK: - Helper Methods
@@ -187,20 +220,12 @@ struct CommandPaletteView: View {
     private func handlePresentationChange(isPresented: Bool) {
         if isPresented {
             manager.configure(bookmarks: bookmarks)
+            setupKeyboardMonitor()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 isSearchFocused = true
             }
-        }
-    }
-    
-    private func handleItemTap(index: Int, item: CommandPaletteItem) {
-        manager.selectedIndex = index
-        manager.execute(item: item)
-    }
-    
-    private func handleItemHover(index: Int, isHovered: Bool) {
-        if isHovered {
-            manager.selectedIndex = index
+        } else {
+            removeKeyboardMonitor()
         }
     }
     
@@ -212,154 +237,59 @@ struct CommandPaletteView: View {
         }
     }
     
-    // MARK: - 通知处理
-    
     private func setupNotifications() {
         NotificationCenter.default.addObserver(
             forName: .openCommandPalette,
             object: nil,
             queue: .main
         ) { _ in
-            Task { @MainActor in
-                manager.open()
+            manager.open()
+        }
+    }
+    
+    // MARK: - Keyboard Handling
+    
+    private func setupKeyboardMonitor() {
+        removeKeyboardMonitor()
+        
+        keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard self.manager.isPresented else { return event }
+            
+            switch event.keyCode {
+            case 53: // Esc
+                self.manager.close()
+                return nil
+            case 126: // ↑
+                self.manager.selectPrevious()
+                return nil
+            case 125: // ↓
+                self.manager.selectNext()
+                return nil
+            case 36: // Return
+                self.manager.executeSelected()
+                return nil
+            default:
+                return event
             }
+        }
+    }
+    
+    private func removeKeyboardMonitor() {
+        if let monitor = keyboardMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyboardMonitor = nil
         }
     }
 }
 
-// MARK: - 命令行项目视图
+// MARK: - Command Palette Row (Compatibility)
 
 struct CommandPaletteRow: View {
     let item: CommandPaletteItem
     let isSelected: Bool
-    var namespace: Namespace.ID
+    var namespace: Namespace.ID = Namespace().wrappedValue
     
     var body: some View {
-        HStack(spacing: 12) {
-            iconView
-            textContent
-            Spacer()
-            selectionIndicator
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(rowBackground)
-        .contentShape(Rectangle())
-    }
-    
-    private var iconView: some View {
-        ZStack {
-            Circle()
-                .fill(iconBackgroundColor)
-                .frame(width: 36, height: 36)
-            
-            Image(systemName: item.icon)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(iconColor)
-        }
-    }
-    
-    private var textContent: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(item.title)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(AppTheme.textPrimary)
-                .lineLimit(1)
-            
-            HStack(spacing: 6) {
-                Text(item.subtitle)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.textSecondary)
-                    .lineLimit(1)
-                
-                if let categoryName = item.categoryName {
-                    Text("·")
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.textTertiary)
-                    
-                    Text(categoryName)
-                        .font(.caption)
-                        .foregroundStyle(item.color ?? AppTheme.textSecondary)
-                        .lineLimit(1)
-                }
-            }
-        }
-    }
-    
-    @ViewBuilder
-    private var selectionIndicator: some View {
-        if isSelected {
-            Image(systemName: "arrow.turn.down.left")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(AppTheme.accent)
-                .matchedGeometryEffect(id: "selection", in: namespace)
-        }
-    }
-    
-    private var rowBackground: some View {
-        RoundedRectangle(cornerRadius: 8)
-            .fill(isSelected ? AppTheme.accent.opacity(0.15) : Color.clear)
-    }
-    
-    private var iconBackgroundColor: Color {
-        if isSelected {
-            return AppTheme.accent.opacity(0.25)
-        }
-        if let color = item.color {
-            return color.opacity(0.15)
-        }
-        return AppTheme.bgSecondary
-    }
-    
-    private var iconColor: Color {
-        if isSelected {
-            return AppTheme.accent
-        }
-        if let color = item.color {
-            return color
-        }
-        return AppTheme.textSecondary
-    }
-}
-
-// MARK: - 键盘事件处理
-
-struct CommandPaletteKeyboardHandler: NSViewRepresentable {
-    @ObservedObject var manager: CommandPaletteManager
-    
-    func makeNSView(context: Context) -> NSView {
-        let view = CommandPaletteKeyView()
-        view.manager = manager
-        return view
-    }
-    
-    func updateNSView(_ nsView: NSView, context: Context) {
-        (nsView as? CommandPaletteKeyView)?.manager = manager
-    }
-    
-    class CommandPaletteKeyView: NSView {
-        var manager: CommandPaletteManager?
-        
-        override var acceptsFirstResponder: Bool { true }
-        
-        override func keyDown(with event: NSEvent) {
-            guard let manager = manager, manager.isPresented else {
-                super.keyDown(with: event)
-                return
-            }
-            
-            switch event.keyCode {
-            case 53: // Esc
-                manager.close()
-            case 126: // ↑
-                manager.selectPrevious()
-            case 125: // ↓
-                manager.selectNext()
-            case 36: // Return
-                manager.executeSelected()
-            default:
-                super.keyDown(with: event)
-            }
-        }
+        EmptyView()
     }
 }
