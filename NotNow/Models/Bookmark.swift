@@ -21,6 +21,10 @@ final class Bookmark {
     var openWithScript: String?
     /// Category this bookmark belongs to
     var category: Category?
+    /// Whether this bookmark is a text snippet (not a URL)
+    var isSnippet: Bool
+    /// The text content for snippet bookmarks
+    @Attribute(.externalStorage) var snippetText: String?
 
     init(
         url: String,
@@ -29,7 +33,9 @@ final class Bookmark {
         coverURL: String? = nil,
         coverData: Data? = nil,
         tags: [String] = [],
-        notes: String = ""
+        notes: String = "",
+        isSnippet: Bool = false,
+        snippetText: String? = nil
     ) {
         self.id = UUID()
         self.url = url
@@ -43,6 +49,8 @@ final class Bookmark {
         self.isFavorite = false
         self.createdAt = Date()
         self.updatedAt = Date()
+        self.isSnippet = isSnippet
+        self.snippetText = snippetText
     }
 
     var domain: String {

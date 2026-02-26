@@ -73,7 +73,7 @@ struct BookmarkDetailSheet: View {
                         VStack(alignment: .leading, spacing: 6) {
                             fieldLabel("内容")
                             TextEditor(text: Binding(
-                                get: { bookmark.snippetText },
+                                get: { bookmark.snippetText ?? "" },
                                 set: { bookmark.snippetText = $0 }
                             ))
                                 .font(.system(.subheadline, design: .monospaced))

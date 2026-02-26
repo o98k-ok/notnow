@@ -22,7 +22,7 @@ enum OpenService {
     /// Get the text content for a bookmark (URL for links, snippet text for snippets)
     static func textFor(_ bookmark: Bookmark) -> String {
         if bookmark.isSnippet {
-            return bookmark.snippetText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (bookmark.snippetText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return bookmark.url
     }
@@ -109,7 +109,7 @@ enum OpenService {
     /// Used by context menu and detail sheet.
     static func open(_ bookmark: Bookmark) {
         if bookmark.isSnippet {
-            let content = bookmark.snippetText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let content = (bookmark.snippetText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !content.isEmpty else { return }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(content, forType: .string)

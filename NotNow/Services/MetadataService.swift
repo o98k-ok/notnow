@@ -465,5 +465,158 @@ actor AIService {
             return nil
         }
     }
+
+    func refineSnippet(
+        content: String,
+        originalTitle: String,
+        originalDesc: String
+    ) async -> AITitleDescription? {
+        var logLines: [String] = []
+        logLines.append("AI snippet request started")
+        logLines.append("content.length = \(content.count)")
+        logLines.append("original_title = \(originalTitle)")
+        logLines.append("original_description = \(originalDesc)")
+
+        guard let cfg = AIConfig.load() else {
+            logLines.append("config = missing or disabled (ai.enabled=false / invalid URL / empty model)")
+            let log = logLines.joined(separator: "\n")
+            storeLog(log)
+            return nil
+        }
+        logLines.append("apiURL = \(cfg.apiURL.absoluteString)")
+        logLines.append("apiKey.present = \(!cfg.apiKey.isEmpty)")
+        logLines.append("model = \(cfg.model)")
+
+        struct ChatRequest: Encodable {
+            struct Message: Encodable {
+                let role: String
+                let content: String
+            }
+            let model: String
+            let messages: [Message]
+            let temperature: Double
+        }
+
+        let systemPrompt =
+            """
+            你是一个为稍后阅读应用生成中文标题、简介和标签的助手。
+            请根据提供的文本片段，生成简洁的标题和描述。
+            只输出一个 JSON 对象，不要输出多余文字，格式为：
+            {
+              "title": "字符串，书签标题",
+              "description": "字符串，摘要描述，不超过 80 个中文字符",
+              "tags": ["tag1", "tag2", ...]  // 可选，0~5 个短标签
+            }
+            tags 应该是简短的中文或英文关键词，例如 ["AI", "生产力", "Swift"]，不要包含空字符串或重复项。
+            """
+        let userContent = """
+            原始标题: \(originalTitle)
+            原始描述: \(originalDesc)
+
+            文本片段内容:
+            \(content.prefix(4000))
+            """
+
+        let body = ChatRequest(
+            model: cfg.model,
+            messages: [
+                .init(role: "system", content: systemPrompt),
+                .init(role: "user", content: userContent),
+            ],
+            temperature: 0.3
+        )
+
+        guard let payload = try? JSONEncoder().encode(body) else {
+            let msg = "[AI] encode request failed"
+            NSLog("%@", msg)
+            logLines.append("error = encode request failed")
+            let log = logLines.joined(separator: "\n")
+            storeLog(log)
+            return nil
+        }
+        logLines.append("request_body.bytes = \(payload.count)")
+
+        var request = URLRequest(url: cfg.apiURL, timeoutInterval: 20)
+        request.httpMethod = "POST"
+        request.httpBody = payload
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !cfg.apiKey.isEmpty {
+            request.setValue("Bearer \(cfg.apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            NSLog("[AI] HTTP %d, size: %d bytes", status, data.count)
+            logLines.append("status = \(status)")
+            logLines.append("response.bytes = \(data.count)")
+            if let text = String(data: data.prefix(2048), encoding: .utf8) {
+                logLines.append("response.preview = \(text)")
+            }
+            guard (200 ... 299).contains(status) else {
+                logLines.append("error = non-2xx status")
+                let log = logLines.joined(separator: "\n")
+                storeLog(log)
+                return nil
+            }
+
+            struct ChatResponse: Decodable {
+                struct Choice: Decodable {
+                    struct Message: Decodable {
+                        let role: String
+                        let content: String
+                    }
+                    let message: Message
+                }
+                let choices: [Choice]
+            }
+
+            guard let decoded = try? JSONDecoder().decode(ChatResponse.self, from: data),
+                let content = decoded.choices.first?.message.content
+            else {
+                let msg = "[AI] decode chat response failed"
+                NSLog("%@", msg)
+                logLines.append("error = decode chat response failed")
+                let log = logLines.joined(separator: "\n")
+                storeLog(log)
+                return nil
+            }
+
+            logLines.append("raw_message = \(content)")
+
+            struct Parsed: Decodable {
+                let title: String?
+                let description: String?
+                let tags: [String]?
+            }
+
+            let parsed: Parsed?
+            if let jsonData = content.data(using: .utf8) {
+                parsed = try? JSONDecoder().decode(Parsed.self, from: jsonData)
+            } else {
+                parsed = nil
+            }
+
+            guard let parsed else {
+                logLines.append("error = message is not valid JSON")
+                let log = logLines.joined(separator: "\n")
+                storeLog(log)
+                return nil
+            }
+
+            logLines.append("decoded.title = \(parsed.title ?? "nil")")
+            logLines.append("decoded.description.length = \(parsed.description?.count ?? 0)")
+            logLines.append("decoded.tags.count = \(parsed.tags?.count ?? 0)")
+            let log = logLines.joined(separator: "\n")
+            storeLog(log)
+            return AITitleDescription(title: parsed.title, desc: parsed.description, tags: parsed.tags)
+        } catch {
+            NSLog("[AI] request error: %@", error.localizedDescription)
+            logLines.append("error = \(error.localizedDescription)")
+            let log = logLines.joined(separator: "\n")
+            storeLog(log)
+            return nil
+        }
+    }
 }
 

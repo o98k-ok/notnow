@@ -311,7 +311,7 @@ struct BookmarkCardView: View {
     }
 
     private var snippetPreviewText: String {
-        let text = bookmark.snippetText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = (bookmark.snippetText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { return bookmark.desc }
         return text
     }

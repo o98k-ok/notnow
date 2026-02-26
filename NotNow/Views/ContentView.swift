@@ -862,7 +862,7 @@ struct ContentView: View {
             return bm.title.lowercased().contains(q)
                 || bm.url.lowercased().contains(q)
                 || bm.desc.lowercased().contains(q)
-                || bm.snippetText.lowercased().contains(q)
+                || (bm.snippetText ?? "").lowercased().contains(q)
                 || bm.notes.lowercased().contains(q)
                 || bm.tags.contains { $0.lowercased().contains(q) }
                 || bm.domain.lowercased().contains(q)
@@ -923,18 +923,18 @@ struct ContentView: View {
     }
 
     private func retagSnippetBookmark(_ bm: Bookmark) async {
-        let content = await MainActor.run { bm.snippetText }
-        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard let content = await MainActor.run(resultType: String?.self) { bm.snippetText },
+              !content.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty else { return }
         if let ai = await AIService.shared.refineSnippet(
             content: content,
             originalTitle: await MainActor.run { bm.title },
             originalDesc: await MainActor.run { bm.desc }
         ) {
             await MainActor.run {
-                if let t = ai.title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+                if let t = ai.title?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines), !t.isEmpty {
                     bm.title = t
                 }
-                if let d = ai.desc?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty {
+                if let d = ai.desc?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines), !d.isEmpty {
                     bm.desc = d
                 }
                 if let tagList = ai.tags {
