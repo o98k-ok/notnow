@@ -4,6 +4,7 @@ import SwiftUI
 struct CommandPaletteView: View {
     @StateObject private var manager = CommandPaletteManager()
     @Query(sort: \Bookmark.createdAt, order: .reverse) private var bookmarks: [Bookmark]
+    @Query(sort: \Category.sortOrder) private var categories: [Category]
     
     @FocusState private var isSearchFocused: Bool
     @State private var keyboardMonitor: Any?
@@ -27,7 +28,10 @@ struct CommandPaletteView: View {
         .animation(.easeInOut(duration: 0.15), value: manager.isPresented)
         .onAppear { setupNotifications() }
         .onChange(of: bookmarks) { _, newBookmarks in
-            manager.configure(bookmarks: newBookmarks)
+            manager.configure(bookmarks: newBookmarks, categories: categories)
+        }
+        .onChange(of: categories) { _, newCategories in
+            manager.configure(bookmarks: bookmarks, categories: newCategories)
         }
         .onChange(of: manager.isPresented) { _, isPresented in
             handlePresentationChange(isPresented: isPresented)
@@ -39,6 +43,7 @@ struct CommandPaletteView: View {
     private var commandPalette: some View {
         VStack(spacing: 0) {
             searchBar
+            categorySelector
             resultsList
         }
         .frame(width: 600)
@@ -90,6 +95,64 @@ struct CommandPaletteView: View {
         .background(AppTheme.bgSecondary)
     }
     
+    // MARK: - Category Selector
+    
+    private var categorySelector: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Array(manager.categoryFilters.enumerated()), id: \.element) { index, filter in
+                    categoryButton(filter: filter, index: index)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+        }
+        .background(AppTheme.bgSecondary.opacity(0.5))
+    }
+    
+    private func categoryButton(filter: CategoryFilter, index: Int) -> some View {
+        let isSelected = manager.selectedCategoryFilter == filter
+        let name = manager.categoryName(for: filter)
+        let color = manager.categoryColor(for: filter)
+        
+        return Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                manager.selectedCategoryFilter = filter
+                manager.selectedIndex = 0
+            }
+        } label: {
+            HStack(spacing: 4) {
+                // 分类图标
+                if filter == .all {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.caption2)
+                } else if filter == .uncategorized {
+                    Image(systemName: "tray")
+                        .font(.caption2)
+                } else {
+                    Circle()
+                        .fill(color ?? AppTheme.textSecondary)
+                        .frame(width: 6, height: 6)
+                }
+                
+                Text(name)
+                    .font(.caption.weight(isSelected ? .semibold : .medium))
+            }
+            .foregroundStyle(isSelected ? (color ?? AppTheme.textPrimary) : AppTheme.textSecondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isSelected ? (color?.opacity(0.15) ?? AppTheme.bgElevated) : AppTheme.bgElevated.opacity(0.5))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isSelected ? (color?.opacity(0.5) ?? AppTheme.borderHover) : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+    
     // MARK: - Results List
     
     private var resultsList: some View {
@@ -124,7 +187,9 @@ struct CommandPaletteView: View {
     
     private func sectionHeader(items: [CommandPaletteItem]) -> some View {
         HStack {
-            Text(manager.searchText.isEmpty ? "最近的书签" : "找到 \(items.count) 个结果")
+            let categoryName = manager.categoryName(for: manager.selectedCategoryFilter)
+            let prefix = manager.searchText.isEmpty ? "最近的" : "找到"
+            Text("\(prefix) \(items.count) 个\(categoryName == "全部" ? "" : "于\(categoryName)")")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(AppTheme.textTertiary)
                 .textCase(.uppercase)
@@ -219,7 +284,7 @@ struct CommandPaletteView: View {
     
     private func handlePresentationChange(isPresented: Bool) {
         if isPresented {
-            manager.configure(bookmarks: bookmarks)
+            manager.configure(bookmarks: bookmarks, categories: categories)
             setupKeyboardMonitor()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 isSearchFocused = true
@@ -267,6 +332,13 @@ struct CommandPaletteView: View {
                 return nil
             case 36: // Return
                 self.manager.executeSelected()
+                return nil
+            case 48: // Tab - switch to next category
+                if event.modifierFlags.contains(.shift) {
+                    self.manager.selectPreviousCategory()
+                } else {
+                    self.manager.selectNextCategory()
+                }
                 return nil
             default:
                 return event

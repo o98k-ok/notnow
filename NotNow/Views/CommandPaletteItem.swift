@@ -1,6 +1,32 @@
 import Foundation
 import SwiftUI
 
+/// 分类过滤器选项
+enum CategoryFilter: Equatable, Hashable {
+    case all
+    case category(UUID)
+    case uncategorized
+    
+    var name: String {
+        switch self {
+        case .all: return "全部"
+        case .uncategorized: return "未分类"
+        case .category: return ""
+        }
+    }
+    
+    func matches(bookmark: Bookmark) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .uncategorized:
+            return bookmark.category == nil
+        case .category(let id):
+            return bookmark.category?.id == id
+        }
+    }
+}
+
 /// Command Palette 中的条目 - 只包含书签
 struct CommandPaletteItem: Identifiable, Hashable {
     let bookmark: Bookmark
@@ -46,21 +72,88 @@ class CommandPaletteManager: ObservableObject {
     @Published var isPresented = false
     @Published var searchText = ""
     @Published var selectedIndex = 0
+    @Published var selectedCategoryFilter: CategoryFilter = .all
+    @Published var categoryFilters: [CategoryFilter] = [.all]
     
     private var bookmarks: [Bookmark] = []
+    private var categories: [Category] = []
     
     /// 空搜索时显示的最新书签数量
     private let recentLimit = 15
     
     /// 初始化并设置数据源
-    func configure(bookmarks: [Bookmark]) {
+    func configure(bookmarks: [Bookmark], categories: [Category]) {
         self.bookmarks = bookmarks
+        self.categories = categories
+        updateCategoryFilters()
+    }
+    
+    /// 更新分类过滤器列表
+    private func updateCategoryFilters() {
+        var filters: [CategoryFilter] = [.all]
+        
+        // 添加已排序的分类
+        let sortedCategories = categories.sorted { $0.sortOrder < $1.sortOrder }
+        for category in sortedCategories {
+            filters.append(.category(category.id))
+        }
+        
+        // 如果有未分类的书签，添加未分类选项
+        let hasUncategorized = bookmarks.contains { $0.category == nil }
+        if hasUncategorized {
+            filters.append(.uncategorized)
+        }
+        
+        categoryFilters = filters
+    }
+    
+    /// 获取分类名称
+    func categoryName(for filter: CategoryFilter) -> String {
+        switch filter {
+        case .all:
+            return "全部"
+        case .uncategorized:
+            return "未分类"
+        case .category(let id):
+            return categories.first { $0.id == id }?.name ?? "未知"
+        }
+    }
+    
+    /// 获取分类颜色
+    func categoryColor(for filter: CategoryFilter) -> Color? {
+        switch filter {
+        case .all:
+            return nil
+        case .uncategorized:
+            return AppTheme.textTertiary
+        case .category(let id):
+            return categories.first { $0.id == id }?.color
+        }
+    }
+    
+    /// 切换到下一个分类
+    func selectNextCategory() {
+        guard let currentIndex = categoryFilters.firstIndex(of: selectedCategoryFilter) else { return }
+        let nextIndex = (currentIndex + 1) % categoryFilters.count
+        selectedCategoryFilter = categoryFilters[nextIndex]
+        selectedIndex = 0 // 重置选中项
+    }
+    
+    /// 切换到上一个分类
+    func selectPreviousCategory() {
+        guard let currentIndex = categoryFilters.firstIndex(of: selectedCategoryFilter) else { return }
+        let prevIndex = (currentIndex - 1 + categoryFilters.count) % categoryFilters.count
+        selectedCategoryFilter = categoryFilters[prevIndex]
+        selectedIndex = 0 // 重置选中项
     }
     
     /// 过滤后的条目
     var filteredItems: [CommandPaletteItem] {
+        // 先按分类过滤
+        let categoryFiltered = bookmarks.filter { selectedCategoryFilter.matches(bookmark: $0) }
+        
         // 按创建时间倒序排列
-        let sortedBookmarks = bookmarks.sorted { $0.createdAt > $1.createdAt }
+        let sortedBookmarks = categoryFiltered.sorted { $0.createdAt > $1.createdAt }
         
         if searchText.isEmpty {
             // 没有输入时只显示最近的 n 条
@@ -104,6 +197,7 @@ class CommandPaletteManager: ObservableObject {
     func open() {
         searchText = ""
         selectedIndex = 0
+        selectedCategoryFilter = .all
         isPresented = true
     }
     
