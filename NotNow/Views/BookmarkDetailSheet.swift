@@ -21,12 +21,12 @@ struct BookmarkDetailSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     // Cover management
-                    if !bookmark.isSnippet {
+                    if !bookmark.isSnippet && !bookmark.isTask {
                         coverManagement
                     }
 
                     // URL
-                    if !bookmark.isSnippet {
+                    if !bookmark.isSnippet && !bookmark.isTask {
                         VStack(alignment: .leading, spacing: 6) {
                         fieldLabel("链接")
                         HStack(spacing: 8) {
@@ -87,9 +87,143 @@ struct BookmarkDetailSheet: View {
                                         .stroke(AppTheme.borderSubtle, lineWidth: 1)
                                 )
                         }
+                    }
 
+                    if bookmark.isTask {
+                        // Completion toggle
+                        HStack(spacing: 12) {
+                            statusToggle(
+                                bookmark.taskCompleted ? "已完成" : "未完成",
+                                icon: bookmark.taskCompleted ? "checkmark.circle.fill" : "circle",
+                                isOn: Binding(
+                                    get: { bookmark.taskCompleted },
+                                    set: { newValue in
+                                        bookmark.taskCompleted = newValue
+                                        bookmark.updatedAt = Date()
+                                    }
+                                ),
+                                color: .green
+                            )
 
+                            if let completedAt = bookmark.completedAt {
+                                Text("完成于 \(completedAt.formatted(.dateTime.month(.abbreviated).day().hour().minute()))")
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.textTertiary)
+                            }
+                            Spacer()
+                        }
 
+                        // Priority
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("优先级")
+                            Picker("", selection: Binding(
+                                get: { bookmark.resolvedTaskPriority },
+                                set: { newValue in
+                                    bookmark.resolvedTaskPriority = newValue
+                                    bookmark.updatedAt = Date()
+                                }
+                            )) {
+                                ForEach(TaskPriority.allCases, id: \.rawValue) { p in
+                                    Label(p.label, systemImage: p.icon).tag(p)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+
+                        // Due date
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("截止日期")
+                            HStack(spacing: 8) {
+                                if let due = bookmark.dueDate {
+                                    DatePicker("", selection: Binding(
+                                        get: { due },
+                                        set: { bookmark.dueDate = $0; bookmark.updatedAt = Date() }
+                                    ), displayedComponents: [.date, .hourAndMinute])
+                                    .labelsHidden()
+
+                                    Button {
+                                        bookmark.dueDate = nil
+                                        bookmark.updatedAt = Date()
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(AppTheme.textTertiary)
+                                    }
+                                    .buttonStyle(.plain)
+
+                                    if bookmark.isOverdue {
+                                        Text("已逾期")
+                                            .font(.caption.weight(.medium))
+                                            .foregroundStyle(.red)
+                                    }
+                                } else {
+                                    Button {
+                                        bookmark.dueDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+                                        bookmark.updatedAt = Date()
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "calendar.badge.plus")
+                                            Text("设置截止日期")
+                                        }
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(AppTheme.accent)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(AppTheme.accent.opacity(0.12))
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+
+                        // Task description
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("任务描述")
+                            TextEditor(text: $bookmark.desc)
+                                .font(.subheadline)
+                                .scrollContentBackground(.hidden)
+                                .padding(10)
+                                .frame(minHeight: 100)
+                                .background(AppTheme.bgInput)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                                )
+                        }
+
+                        // Optional link for task
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("关联链接")
+                            HStack(spacing: 8) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "link")
+                                        .font(.caption)
+                                        .foregroundStyle(AppTheme.textTertiary)
+                                    TextField("https://...", text: $bookmark.url)
+                                        .textFieldStyle(.plain)
+                                        .font(.subheadline)
+                                }
+                                .darkTextField()
+
+                                if !bookmark.url.hasPrefix("task://") {
+                                    Button {
+                                        if let url = URL(string: bookmark.url) {
+                                            NSWorkspace.shared.open(url)
+                                        }
+                                    } label: {
+                                        Image(systemName: "arrow.up.right")
+                                            .font(.caption.weight(.bold))
+                                            .frame(width: 36, height: 36)
+                                            .background(AppTheme.accent.opacity(0.15))
+                                            .foregroundStyle(AppTheme.accent)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
                     }
 
                     // Tags

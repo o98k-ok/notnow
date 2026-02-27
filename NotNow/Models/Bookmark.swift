@@ -1,15 +1,51 @@
 import Foundation
 import SwiftData
+import SwiftUI
 
 enum BookmarkKind: String, CaseIterable, Codable {
     case link
     case snippet
+    case task
 }
 
 enum SnippetFormat: String, CaseIterable, Codable {
     case code
     case quote
     case plain
+}
+
+enum TaskPriority: Int, CaseIterable, Codable {
+    case none = 0
+    case low = 1
+    case medium = 2
+    case high = 3
+
+    var label: String {
+        switch self {
+        case .none: "无"
+        case .low: "低"
+        case .medium: "中"
+        case .high: "高"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .none: "minus"
+        case .low: "arrow.down"
+        case .medium: "equal"
+        case .high: "arrow.up"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .none: .secondary
+        case .low: .blue
+        case .medium: .orange
+        case .high: .red
+        }
+    }
 }
 
 @Model
@@ -39,6 +75,14 @@ final class Bookmark {
     var snippetLanguage: String?
     /// `code | quote | plain`
     var snippetFormat: String?
+    /// Whether this task is completed
+    var isCompleted: Bool?
+    /// When this task was completed
+    var completedAt: Date?
+    /// Due date for task
+    var dueDate: Date?
+    /// Priority: 0=none, 1=low, 2=medium, 3=high
+    var taskPriority: Int?
 
     init(
         url: String,
@@ -84,6 +128,10 @@ final class Bookmark {
         bookmarkKind == .snippet
     }
 
+    var isTask: Bool {
+        bookmarkKind == .task
+    }
+
     var resolvedSnippetFormat: SnippetFormat {
         get { SnippetFormat(rawValue: snippetFormat ?? "") ?? .plain }
         set { snippetFormat = newValue.rawValue }
@@ -92,5 +140,23 @@ final class Bookmark {
     var snippetText: String {
         get { snippetContent ?? "" }
         set { snippetContent = newValue }
+    }
+
+    var taskCompleted: Bool {
+        get { isCompleted ?? false }
+        set {
+            isCompleted = newValue
+            completedAt = newValue ? Date() : nil
+        }
+    }
+
+    var resolvedTaskPriority: TaskPriority {
+        get { TaskPriority(rawValue: taskPriority ?? 0) ?? .none }
+        set { taskPriority = newValue.rawValue }
+    }
+
+    var isOverdue: Bool {
+        guard isTask, !taskCompleted, let due = dueDate else { return false }
+        return due < Date()
     }
 }

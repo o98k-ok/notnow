@@ -34,6 +34,11 @@ enum OpenService {
             return .script
         }
 
+        // Task type always opens edit dialog
+        if bookmark.isTask {
+            return .edit
+        }
+
         let key: String
         if bookmark.isSnippet {
             key = isCmdClick ? "snippet.cmdClickAction" : "snippet.clickAction"
@@ -52,6 +57,11 @@ enum OpenService {
     /// Resolve the script command for an action.
     /// Card-level script overrides global settings.
     static func resolveScript(for bookmark: Bookmark, isCmdClick: Bool) -> String {
+        // Task type doesn't support scripts
+        if bookmark.isTask {
+            return ""
+        }
+
         if let script = bookmark.openWithScript, !script.isEmpty {
             return script
         }
@@ -105,9 +115,16 @@ enum OpenService {
         try? process.run()
     }
 
-    /// Simple open: browser for links, copy for snippets.
+    /// Simple open: browser for links, copy for snippets, open linked URL for tasks.
     /// Used by context menu and detail sheet.
     static func open(_ bookmark: Bookmark) {
+        if bookmark.isTask {
+            guard !bookmark.url.hasPrefix("task://"),
+                  let url = URL(string: bookmark.url) else { return }
+            NSWorkspace.shared.open(url)
+            return
+        }
+
         if bookmark.isSnippet {
             let content = bookmark.snippetText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !content.isEmpty else { return }

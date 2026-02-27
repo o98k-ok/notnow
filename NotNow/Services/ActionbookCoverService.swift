@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 /// 使用 Actionbook 获取封面的服务
 /// 作为 MetadataService 的降级方案，用于处理需要浏览器渲染的页面
@@ -122,8 +123,9 @@ actor ActionbookCoverService {
         }
         
         cleanupFile(at: screenshotPath)
-        NSLog("[Actionbook] screenshot success, size: %d bytes", imageData.count)
-        return BookmarkMetadata(imageData: imageData)
+        let processed = cropScreenshotToWidth640(imageData) ?? imageData
+        NSLog("[Actionbook] screenshot success, original=%d bytes, processed=%d bytes", imageData.count, processed.count)
+        return BookmarkMetadata(imageData: processed)
     }
     
     /// 执行命令链并解析结果
@@ -212,6 +214,35 @@ actor ActionbookCoverService {
         
         // 转义引号，确保 shell 正确传递
         return js.replacingOccurrences(of: "\"", with: "\\\"")
+    }
+    
+    /// 将截图裁剪为水平居中、宽度不超过 640 的区域，避免整页视图导致内容过小
+    private func cropScreenshotToWidth640(_ data: Data, targetWidth: CGFloat = 640) -> Data? {
+        guard let image = NSImage(data: data),
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+        
+        let width = CGFloat(cgImage.width)
+        let height = CGFloat(cgImage.height)
+        
+        // 宽度本身就不大，直接复用原图
+        guard width > targetWidth, targetWidth > 0 else {
+            return nil
+        }
+        
+        // 水平居中裁剪到指定宽度，保留全部高度
+        let newWidth = targetWidth
+        let originX = (width - newWidth) / 2.0
+        let cropRect = CGRect(x: originX, y: 0, width: newWidth, height: height)
+        
+        guard let cropped = cgImage.cropping(to: cropRect) else {
+            return nil
+        }
+        
+        let rep = NSBitmapImageRep(cgImage: cropped)
+        rep.size = NSSize(width: newWidth, height: height)
+        return rep.representation(using: .png, properties: [:])
     }
 
     /// 截图前把页面滚动到主内容区域，提高截图命中重点区域的概率

@@ -44,6 +44,10 @@ struct NotNowExportBookmark: Encodable {
     let snippetContent: String
     let snippetLanguage: String?
     let snippetFormat: String?
+    let isCompleted: Bool?
+    let completedAt: Date?
+    let dueDate: Date?
+    let taskPriority: Int?
 }
 
 struct NotNowExportAppConfig: Codable {
@@ -83,6 +87,10 @@ struct NotNowImportBookmark: Decodable {
     let snippetContent: String?
     let snippetLanguage: String?
     let snippetFormat: String?
+    let isCompleted: Bool?
+    let completedAt: Date?
+    let dueDate: Date?
+    let taskPriority: Int?
 }
 
 struct NotNowImportStats {
@@ -190,7 +198,11 @@ enum NotNowBackupService {
                 kind: b.kind ?? BookmarkKind.link.rawValue,
                 snippetContent: b.snippetContent ?? "",
                 snippetLanguage: b.snippetLanguage,
-                snippetFormat: b.snippetFormat
+                snippetFormat: b.snippetFormat,
+                isCompleted: b.isCompleted,
+                completedAt: b.completedAt,
+                dueDate: b.dueDate,
+                taskPriority: b.taskPriority
             )
         }
         guard let bmData = try? encoder.encode(bmDtos) else {
@@ -333,6 +345,10 @@ enum NotNowBackupService {
             bm.snippetContent = b.snippetContent ?? ""
             bm.snippetLanguage = b.snippetLanguage
             bm.snippetFormat = b.snippetFormat
+            bm.isCompleted = b.isCompleted
+            bm.completedAt = b.completedAt
+            bm.dueDate = b.dueDate
+            bm.taskPriority = b.taskPriority
             modelContext.insert(bm)
 
             let coverPath = coversDir.appendingPathComponent(b.id).path

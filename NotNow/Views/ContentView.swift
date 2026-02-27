@@ -498,7 +498,10 @@ struct ContentView: View {
     private func splitIntoColumns(bookmarks: [Bookmark], columns: Int) -> [[Bookmark]] {
         guard columns > 0, !bookmarks.isEmpty else { return bookmarks.isEmpty ? [] : [bookmarks] }
         let spacing: CGFloat = 14
-        let estimatedHeight: (Bookmark) -> CGFloat = { $0.hasCover ? 250 : 140 }
+        let estimatedHeight: (Bookmark) -> CGFloat = {
+            if $0.isTask { return 120 }
+            return $0.hasCover ? 250 : 140
+        }
         var columnHeights = [CGFloat](repeating: 0, count: columns)
         var result = [[Bookmark]](repeating: [], count: columns)
         for bm in bookmarks {
@@ -628,14 +631,28 @@ struct ContentView: View {
 
     @ViewBuilder
     private func contextMenu(for bm: Bookmark) -> some View {
-        Button(bm.isSnippet ? "复制内容" : "打开") { OpenService.open(bm) }
-        if !bm.isSnippet {
-            Button("在浏览器中打开") {
-                if let url = URL(string: bm.url) { NSWorkspace.shared.open(url) }
+        if bm.isTask {
+            Button(bm.taskCompleted ? "标记未完成" : "标记完成") {
+                bm.taskCompleted.toggle()
+                bm.updatedAt = Date()
+                try? modelContext.save()
+                refreshAll()
+            }
+            Button("编辑") { selectedBookmark = bm }
+            if !bm.url.hasPrefix("task://") {
+                Button("打开关联链接") {
+                    if let url = URL(string: bm.url) { NSWorkspace.shared.open(url) }
+                }
+            }
+        } else {
+            Button(bm.isSnippet ? "复制内容" : "打开") { OpenService.open(bm) }
+            if !bm.isSnippet {
+                Button("在浏览器中打开") {
+                    if let url = URL(string: bm.url) { NSWorkspace.shared.open(url) }
+                }
             }
         }
         Divider()
-        // Move to category
         if !categories.isEmpty {
             Menu("移动到分类") {
                 Button("无分类") { bm.category = nil; bm.updatedAt = Date() }
@@ -649,9 +666,11 @@ struct ContentView: View {
             toggleFavorite(bm)
         }
         Divider()
-        Button("复制链接") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(bm.url, forType: .string)
+        if !bm.isTask || !bm.url.hasPrefix("task://") {
+            Button("复制链接") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(bm.url, forType: .string)
+            }
         }
         Button("编辑") { selectedBookmark = bm }
         Divider()
@@ -838,7 +857,7 @@ struct ContentView: View {
                 try? modelContext.save()
                 isBatchRetagging = false
                 batchRetagProgressText = ""
-                importAlertMessage = "批量重打标完成：共处理 \(stats.total) 条（Snippet: \(stats.snippets), 普通链接: \(stats.normalLinks), Twitter: \(stats.twitterLinks), 跳过: \(stats.skipped)）"
+                importAlertMessage = "批量重打标完成：共处理 \(stats.total) 条（Snippet: \(stats.snippets), Task: \(stats.tasks), 普通链接: \(stats.normalLinks), Twitter: \(stats.twitterLinks), 跳过: \(stats.skipped)）"
                 showImportAlert = true
             }
         }
@@ -965,6 +984,9 @@ struct ContentView: View {
         if bm.isSnippet {
             await retagSnippetBookmark(bm)
             stats.snippets += 1
+        } else if bm.isTask {
+            await retagTaskBookmark(bm)
+            stats.tasks += 1
         } else if isTwitterURL(bm.url) {
             if canProcessTwitter {
                 await retagTwitterBookmark(bm)
@@ -977,6 +999,32 @@ struct ContentView: View {
         } else {
             await retagNormalBookmark(bm)
             stats.normalLinks += 1
+        }
+    }
+
+    private func retagTaskBookmark(_ bm: Bookmark) async {
+        let content = await MainActor.run { bm.desc }
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        if let ai = await AIService.shared.refineSnippet(
+            content: content,
+            originalTitle: await MainActor.run { bm.title },
+            originalDesc: await MainActor.run { bm.desc }
+        ) {
+            await MainActor.run {
+                if let t = ai.title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+                    bm.title = t
+                }
+                if let d = ai.desc?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty {
+                    bm.desc = d
+                }
+                if let tagList = ai.tags {
+                    bm.tags = normalizedTags(tagList)
+                }
+                bm.updatedAt = Date()
+            }
+        } else {
+            await MainActor.run { bm.updatedAt = Date() }
         }
     }
 
@@ -1447,6 +1495,7 @@ struct ContentView: View {
 private struct BatchRetagStats {
     var total: Int
     var snippets: Int = 0
+    var tasks: Int = 0
     var normalLinks: Int = 0
     var twitterLinks: Int = 0
     var skipped: Int = 0

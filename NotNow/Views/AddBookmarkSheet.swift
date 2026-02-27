@@ -24,6 +24,9 @@ struct AddBookmarkSheet: View {
     @State private var aiRefined = false
     @State private var kind: BookmarkKind = .link
     @State private var snippetContent = ""
+    @State private var taskPriority: TaskPriority = .none
+    @State private var taskDueDate: Date?
+    @State private var showDueDatePicker = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -39,11 +42,12 @@ struct AddBookmarkSheet: View {
                         Picker("", selection: $kind) {
                             Text("链接").tag(BookmarkKind.link)
                             Text("片段").tag(BookmarkKind.snippet)
+                            Text("任务").tag(BookmarkKind.task)
                         }
                         .pickerStyle(.segmented)
                     }
 
-                    // URL Input
+                    // URL Input (link always, task optional)
                     if kind == .link {
                         VStack(alignment: .leading, spacing: 6) {
                         fieldLabel("链接")
@@ -87,8 +91,8 @@ struct AddBookmarkSheet: View {
                     // Title
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 6) {
-                            fieldLabel("标题")
-                            if aiEnabled {
+                            fieldLabel(kind == .task ? "任务标题" : "标题")
+                            if aiEnabled && kind != .task {
                                 if aiRefined {
                                     HStack(spacing: 4) {
                                         Image(systemName: "sparkles")
@@ -108,17 +112,126 @@ struct AddBookmarkSheet: View {
                                 }
                             }
                         }
-                        TextField("输入标题", text: $title)
+                        TextField(kind == .task ? "输入任务标题" : "输入标题", text: $title)
                             .darkTextField()
                             .font(.subheadline)
                     }
 
-                    // Description
-                    VStack(alignment: .leading, spacing: 6) {
-                        fieldLabel("描述")
-                        TextField("输入描述", text: $desc)
+                    // Task-specific fields
+                    if kind == .task {
+                        // Task description + AI 打标
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                fieldLabel("任务描述")
+                                Spacer()
+                                if aiEnabled {
+                                    Button {
+                                        refineTaskMetadata()
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            if isFetching {
+                                                ProgressView()
+                                                    .controlSize(.mini)
+                                            } else {
+                                                Image(systemName: "sparkles")
+                                                    .font(.system(size: 11, weight: .medium))
+                                            }
+                                            Text("AI 打标")
+                                                .font(.system(size: 11, weight: .medium))
+                                        }
+                                        .foregroundStyle(AppTheme.accent)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(desc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isFetching)
+                                    .opacity(desc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.4 : 1)
+                                }
+                            }
+                            TextEditor(text: $desc)
+                                .font(.subheadline)
+                                .scrollContentBackground(.hidden)
+                                .padding(10)
+                                .frame(minHeight: 80)
+                                .background(AppTheme.bgInput)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                                )
+                        }
+
+                        // Priority
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("优先级")
+                            Picker("", selection: $taskPriority) {
+                                ForEach(TaskPriority.allCases, id: \.rawValue) { p in
+                                    Label(p.label, systemImage: p.icon).tag(p)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+
+                        // Due date
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("截止日期")
+                            HStack(spacing: 8) {
+                                if let due = taskDueDate {
+                                    DatePicker("", selection: Binding(
+                                        get: { due },
+                                        set: { taskDueDate = $0 }
+                                    ), displayedComponents: [.date, .hourAndMinute])
+                                    .labelsHidden()
+
+                                    Button {
+                                        taskDueDate = nil
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(AppTheme.textTertiary)
+                                    }
+                                    .buttonStyle(.plain)
+                                } else {
+                                    Button {
+                                        taskDueDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "calendar.badge.plus")
+                                            Text("设置截止日期")
+                                        }
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(AppTheme.accent)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(AppTheme.accent.opacity(0.12))
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+
+                        // Optional link
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("关联链接（可选）")
+                            HStack(spacing: 8) {
+                                Image(systemName: "link")
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.textTertiary)
+                                TextField("https://...", text: $url)
+                                    .textFieldStyle(.plain)
+                                    .font(.subheadline)
+                            }
                             .darkTextField()
-                            .font(.subheadline)
+                        }
+                    }
+
+                    // Description (link & snippet only)
+                    if kind != .task {
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("描述")
+                            TextField("输入描述", text: $desc)
+                                .darkTextField()
+                                .font(.subheadline)
+                        }
                     }
 
                     if kind == .snippet {
@@ -220,8 +333,8 @@ struct AddBookmarkSheet: View {
                     .accentButtonStyle()
                     .buttonStyle(.plain)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(kind == .link ? url.isEmpty : snippetContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .opacity((kind == .link ? url.isEmpty : snippetContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ? 0.5 : 1)
+                    .disabled(saveButtonDisabled)
+                    .opacity(saveButtonDisabled ? 0.5 : 1)
             }
             .padding(20)
             .background(AppTheme.bgSecondary.opacity(0.5))
@@ -440,6 +553,63 @@ struct AddBookmarkSheet: View {
         }
     }
 
+    private func refineTaskMetadata() {
+        let content = desc.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { return }
+        metadataTask?.cancel()
+        aiRefined = false
+        isFetching = true
+        metadataTask = Task {
+            let ai = await AIService.shared.refineSnippet(
+                content: content,
+                originalTitle: title, originalDesc: desc
+            )
+            if Task.isCancelled { return }
+            await MainActor.run {
+                if Task.isCancelled { return }
+                isFetching = false
+                guard let ai else { return }
+                var didChange = false
+                if let t = ai.title, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    title = t; didChange = true
+                }
+                if let d = ai.desc, !d.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    desc = d; didChange = true
+                }
+                if let tagList = ai.tags, !tagList.isEmpty {
+                    let normalizedTags = tagList
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                    if !normalizedTags.isEmpty {
+                        let existing = tagsText.split(separator: ",")
+                            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            .filter { !$0.isEmpty }
+                        var seen = Set<String>()
+                        let combined = (existing + normalizedTags).filter { tag in
+                            let lower = tag.lowercased()
+                            if seen.contains(lower) { return false }
+                            seen.insert(lower)
+                            return true
+                        }
+                        tagsText = combined.joined(separator: ", ")
+                    }
+                }
+                if didChange { aiRefined = true }
+            }
+        }
+    }
+
+    private var saveButtonDisabled: Bool {
+        switch kind {
+        case .link:
+            return url.isEmpty
+        case .snippet:
+            return snippetContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .task:
+            return title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
     private func save() {
         let tags =
             tagsText.split(separator: ",")
@@ -448,6 +618,10 @@ struct AddBookmarkSheet: View {
         let finalURL: String = {
             if kind == .snippet {
                 return "snippet://\(UUID().uuidString)"
+            }
+            if kind == .task {
+                let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? "task://\(UUID().uuidString)" : trimmed
             }
             return url
         }()
@@ -459,6 +633,10 @@ struct AddBookmarkSheet: View {
         bookmark.bookmarkKind = kind
         if kind == .snippet {
             bookmark.snippetContent = snippetContent
+        }
+        if kind == .task {
+            bookmark.resolvedTaskPriority = taskPriority
+            bookmark.dueDate = taskDueDate
         }
         bookmark.category = categories.first { $0.id == selectedCategoryID }
         modelContext.insert(bookmark)

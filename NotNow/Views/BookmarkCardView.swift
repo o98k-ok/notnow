@@ -82,7 +82,9 @@ struct BookmarkCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if bookmark.isSnippet {
+            if bookmark.isTask {
+                taskCard
+            } else if bookmark.isSnippet {
                 snippetCard
             } else if bookmark.hasCover {
                 coverCard
@@ -127,6 +129,135 @@ struct BookmarkCardView: View {
                 displayCover = nil
             }
         }
+    }
+
+    // MARK: - Task Card
+
+    private var taskCard: some View {
+        let completed = bookmark.taskCompleted
+        let priority = bookmark.resolvedTaskPriority
+
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 10) {
+                // Checkbox — click to toggle completion
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        bookmark.taskCompleted.toggle()
+                        bookmark.updatedAt = Date()
+                        try? bookmark.modelContext?.save()
+                    }
+                } label: {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(completed ? AppTheme.accentGreen : AppTheme.textTertiary.opacity(0.5), lineWidth: 1.5)
+                            .frame(width: 22, height: 22)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(completed ? AppTheme.accentGreen.opacity(0.15) : Color.clear)
+                            )
+                        if completed {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(AppTheme.accentGreen)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(bookmark.title.isEmpty ? "未命名任务" : bookmark.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(completed ? AppTheme.textTertiary : AppTheme.textPrimary)
+                        .strikethrough(completed, color: AppTheme.textTertiary)
+                        .lineLimit(2)
+
+                    // Task badges (type / status)，参考 snippet 卡片的打标风格
+                    HStack(spacing: 4) {
+                        tagPill("task")
+                        if completed {
+                            tagPill("done")
+                        } else if bookmark.isOverdue {
+                            tagPill("overdue")
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .frame(height: 18)
+                }
+
+                Spacer()
+
+                // Priority indicator
+                if priority != .none {
+                    Image(systemName: priority.icon)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(priority.color)
+                        .padding(4)
+                        .background(priority.color.opacity(0.12))
+                        .clipShape(Circle())
+                }
+            }
+            .padding(14)
+
+            if !bookmark.desc.isEmpty {
+                Divider()
+                    .background(AppTheme.borderSubtle)
+                    .padding(.horizontal, 14)
+
+                Text(bookmark.desc)
+                    .font(.caption)
+                    .foregroundStyle(completed ? AppTheme.textTertiary.opacity(0.6) : AppTheme.textSecondary)
+                    .lineLimit(2)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                // Due date + tags row
+                HStack(spacing: 6) {
+                    if let due = bookmark.dueDate {
+                        let overdue = bookmark.isOverdue
+                        HStack(spacing: 3) {
+                            Image(systemName: overdue ? "exclamationmark.circle.fill" : "calendar")
+                                .font(.system(size: 9))
+                            Text(due.formatted(.dateTime.month(.abbreviated).day()))
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .foregroundStyle(completed ? AppTheme.textTertiary : (overdue ? Color.red : AppTheme.textSecondary))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background((overdue && !completed ? Color.red : AppTheme.textTertiary).opacity(0.1))
+                        .clipShape(Capsule())
+                    }
+
+                    if !bookmark.tags.isEmpty {
+                        ForEach(Array(bookmark.tags.prefix(2)), id: \.self) { tag in
+                            tagPill(tag)
+                        }
+                        if bookmark.tags.count > 2 {
+                            Text("+\(bookmark.tags.count - 2)")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(AppTheme.textTertiary)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                HStack(spacing: 8) {
+                    // Show link icon if task has a real URL
+                    if !bookmark.url.hasPrefix("task://") {
+                        Image(systemName: "link")
+                            .font(.system(size: 9))
+                            .foregroundStyle(AppTheme.accent.opacity(0.6))
+                    }
+                    Spacer()
+                    Text(relativeCreatedAtText)
+                        .font(.system(size: 10))
+                        .foregroundStyle(AppTheme.textTertiary)
+                }
+            }
+            .padding(14)
+        }
+        .opacity(completed ? 0.7 : 1)
     }
 
     // MARK: - Card With Cover
