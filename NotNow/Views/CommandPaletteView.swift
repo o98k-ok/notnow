@@ -7,7 +7,10 @@ struct CommandPaletteView: View {
     @Query(sort: \Category.sortOrder) private var categories: [Category]
     
     @FocusState private var isSearchFocused: Bool
+    @State private var searchDraftText = ""
+    @State private var searchDebounceTask: Task<Void, Never>?
     @State private var keyboardMonitor: Any?
+    private let searchDebounceNanoseconds: UInt64 = 250_000_000
     
     var body: some View {
         ZStack {
@@ -35,6 +38,9 @@ struct CommandPaletteView: View {
         }
         .onChange(of: manager.isPresented) { _, isPresented in
             handlePresentationChange(isPresented: isPresented)
+        }
+        .onChange(of: searchDraftText) {
+            scheduleSearchCommit()
         }
     }
     
@@ -66,15 +72,18 @@ struct CommandPaletteView: View {
                 .font(.title3)
                 .foregroundStyle(AppTheme.textTertiary)
             
-            TextField("搜索书签...", text: $manager.searchText)
+            TextField("搜索书签...", text: $searchDraftText)
                 .font(.title3.weight(.medium))
                 .foregroundStyle(AppTheme.textPrimary)
                 .focused($isSearchFocused)
                 .textFieldStyle(.plain)
                 .onSubmit { manager.executeSelected() }
             
-            if !manager.searchText.isEmpty {
-                Button { manager.searchText = "" } label: {
+            if !searchDraftText.isEmpty {
+                Button {
+                    searchDraftText = ""
+                    commitSearchImmediately()
+                } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.title3)
                         .foregroundStyle(AppTheme.textTertiary)
@@ -285,11 +294,14 @@ struct CommandPaletteView: View {
     private func handlePresentationChange(isPresented: Bool) {
         if isPresented {
             manager.configure(bookmarks: bookmarks, categories: categories)
+            searchDraftText = manager.searchText
             setupKeyboardMonitor()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 isSearchFocused = true
             }
         } else {
+            searchDebounceTask?.cancel()
+            searchDebounceTask = nil
             removeKeyboardMonitor()
         }
     }
@@ -308,8 +320,29 @@ struct CommandPaletteView: View {
             object: nil,
             queue: .main
         ) { _ in
-            manager.open()
+            Task { @MainActor in
+                manager.open()
+            }
         }
+    }
+
+    private func scheduleSearchCommit() {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = Task { @MainActor in
+            let pending = searchDraftText.trimmingCharacters(in: .whitespacesAndNewlines)
+            try? await Task.sleep(nanoseconds: searchDebounceNanoseconds)
+            guard !Task.isCancelled else { return }
+            guard pending != manager.searchText else { return }
+            manager.searchText = pending
+        }
+    }
+
+    private func commitSearchImmediately() {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = nil
+        let pending = searchDraftText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard pending != manager.searchText else { return }
+        manager.searchText = pending
     }
     
     // MARK: - Keyboard Handling

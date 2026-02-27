@@ -79,6 +79,7 @@ class CommandPaletteManager: ObservableObject {
     private var bookmarks: [Bookmark] = []
     private var categories: [Category] = []
     private var cancellables = Set<AnyCancellable>()
+    private var searchTask: Task<Void, Never>?
     
     /// 空搜索时显示的最新书签数量
     private let recentLimit = 15
@@ -91,12 +92,79 @@ class CommandPaletteManager: ObservableObject {
     }
     
     private func setupDebounce() {
-        Publishers.CombineLatest($searchText, $selectedCategoryFilter)
-            .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
-            .sink { [weak self] _, _ in
-                self?.refreshFilteredItems()
+        let normalizedSearchQuery = $searchText
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .removeDuplicates()
+
+        Publishers.CombineLatest(normalizedSearchQuery, $selectedCategoryFilter.removeDuplicates())
+            .sink { [weak self] query, _ in
+                self?.performSearch(searchQuery: query)
             }
             .store(in: &cancellables)
+    }
+    
+    /// 在后台线程执行搜索，避免阻塞 UI
+    private func performSearch(searchQuery: String? = nil) {
+        // 取消之前的搜索任务
+        searchTask?.cancel()
+        
+        let currentBookmarks = bookmarks
+        let currentCategoryFilter = selectedCategoryFilter
+        let currentSearchText = (searchQuery ?? searchText).trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        searchTask = Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            
+            // 在后台线程执行过滤
+            let items = await Task.detached(priority: .userInitiated) { () -> [CommandPaletteItem] in
+                // 先按分类过滤
+                let categoryFiltered = currentBookmarks.filter { currentCategoryFilter.matches(bookmark: $0) }
+                let sortedBookmarks = categoryFiltered.sorted { $0.createdAt > $1.createdAt }
+                
+                // 空搜索时显示最近的书签
+                if currentSearchText.isEmpty {
+                    return sortedBookmarks.prefix(self.recentLimit).map { CommandPaletteItem(bookmark: $0) }
+                }
+                
+                // 执行搜索过滤
+                let query = currentSearchText.lowercased()
+                let filtered = sortedBookmarks.filter { bm in
+                    // 快速路径：检查标题和 URL（最常见的搜索字段）
+                    if bm.title.lowercased().contains(query) || bm.url.lowercased().contains(query) {
+                        return true
+                    }
+                    // 慢速路径：检查其他字段
+                    if bm.desc.lowercased().contains(query) ||
+                       bm.notes.lowercased().contains(query) ||
+                       bm.domain.lowercased().contains(query) {
+                        return true
+                    }
+                    // 检查 snippetText（可能较长，最后检查）
+                    if bm.snippetText.lowercased().contains(query) {
+                        return true
+                    }
+                    // 检查标签
+                    if bm.tags.contains(where: { $0.lowercased().contains(query) }) {
+                        return true
+                    }
+                    // 检查分类名称
+                    if let categoryName = bm.category?.name,
+                       categoryName.lowercased().contains(query) {
+                        return true
+                    }
+                    return false
+                }
+                
+                return filtered.map { CommandPaletteItem(bookmark: $0) }
+            }.value
+            
+            // 检查任务是否被取消
+            guard !Task.isCancelled else { return }
+            
+            self.filteredItems = items
+            // 重置选中索引
+            self.selectedIndex = 0
+        }
     }
     
     /// 初始化并设置数据源
@@ -166,29 +234,9 @@ class CommandPaletteManager: ObservableObject {
         selectedIndex = 0 // 重置选中项
     }
     
-    /// 刷新过滤后的条目
+    /// 刷新过滤后的条目（直接调用，用于初始化等场景）
     private func refreshFilteredItems() {
-        let categoryFiltered = bookmarks.filter { selectedCategoryFilter.matches(bookmark: $0) }
-        let sortedBookmarks = categoryFiltered.sorted { $0.createdAt > $1.createdAt }
-        
-        if searchText.isEmpty {
-            filteredItems = sortedBookmarks.prefix(recentLimit).map { CommandPaletteItem(bookmark: $0) }
-            return
-        }
-        
-        let query = searchText.lowercased()
-        let filtered = sortedBookmarks.filter { bm in
-            bm.title.lowercased().contains(query)
-                || bm.url.lowercased().contains(query)
-                || bm.desc.lowercased().contains(query)
-                || bm.notes.lowercased().contains(query)
-                || bm.snippetText.lowercased().contains(query)
-                || bm.domain.lowercased().contains(query)
-                || bm.tags.contains { $0.lowercased().contains(query) }
-                || bm.category?.name.lowercased().contains(query) ?? false
-        }
-        
-        filteredItems = filtered.map { CommandPaletteItem(bookmark: $0) }
+        performSearch()
     }
     
     /// 执行选中的条目
@@ -212,8 +260,14 @@ class CommandPaletteManager: ObservableObject {
         searchText = ""
         selectedIndex = 0
         selectedCategoryFilter = .all
-        refreshFilteredItems()
+        // 直接使用缓存数据快速显示，不触发完整搜索
+        let sortedBookmarks = bookmarks.sorted { $0.createdAt > $1.createdAt }
+        filteredItems = sortedBookmarks.prefix(recentLimit).map { CommandPaletteItem(bookmark: $0) }
         isPresented = true
+    }
+    
+    deinit {
+        searchTask?.cancel()
     }
     
     /// 关闭面板

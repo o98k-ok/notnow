@@ -614,5 +614,105 @@ actor AIService {
             return nil
         }
     }
+
+    /// 根据页面结构分析最佳 OG 封面区域，返回 CSS 选择器
+    func analyzeCoverRegion(pageStructure: String, url: String) async -> String? {
+        guard let cfg = AIConfig.load() else {
+            NSLog("[AI] cover region: config missing")
+            return nil
+        }
+
+        struct ChatRequest: Encodable {
+            struct Message: Encodable {
+                let role: String
+                let content: String
+            }
+            let model: String
+            let messages: [Message]
+            let temperature: Double
+        }
+
+        let systemPrompt = """
+        你是一个网页结构分析助手。根据页面 DOM 结构（包含元素选择器、位置和尺寸），选出最适合作为「链接封面图」的区域。
+        要求：优先 hero/主图、文章首图、主内容区；避开导航栏、侧边栏、广告。
+        目标比例约 1.91:1（如 1200×630）。
+        请只输出一个 JSON 对象，不要其他文字：
+        {"selector": "CSS选择器，如 main 或 .hero 或 article", "reason": "简要说明"}
+        若无法确定，返回 {"selector": "body", "reason": "fallback"}。
+        """
+
+        let userContent = """
+        URL: \(url)
+
+        页面结构（JSON）:
+        \(pageStructure)
+        """
+
+        let body = ChatRequest(
+            model: cfg.model,
+            messages: [
+                .init(role: "system", content: systemPrompt),
+                .init(role: "user", content: userContent),
+            ],
+            temperature: 0.2
+        )
+
+        guard let payload = try? JSONEncoder().encode(body) else {
+            NSLog("[AI] cover region: encode failed")
+            return nil
+        }
+
+        var request = URLRequest(url: cfg.apiURL, timeoutInterval: 15)
+        request.httpMethod = "POST"
+        request.httpBody = payload
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !cfg.apiKey.isEmpty {
+            request.setValue("Bearer \(cfg.apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200...299).contains(status) else {
+                NSLog("[AI] cover region HTTP %d", status)
+                return nil
+            }
+
+            struct ChatResponse: Decodable {
+                struct Choice: Decodable {
+                    struct Message: Decodable { let content: String }
+                    let message: Message
+                }
+                let choices: [Choice]
+            }
+
+            guard let decoded = try? JSONDecoder().decode(ChatResponse.self, from: data),
+                  let content = decoded.choices.first?.message.content
+            else {
+                NSLog("[AI] cover region: decode failed")
+                return nil
+            }
+
+            struct Parsed: Decodable {
+                let selector: String?
+                let reason: String?
+            }
+
+            guard let jsonData = content.data(using: .utf8),
+                  let parsed = try? JSONDecoder().decode(Parsed.self, from: jsonData),
+                  let sel = parsed.selector?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !sel.isEmpty
+            else {
+                NSLog("[AI] cover region: invalid JSON or empty selector")
+                return nil
+            }
+
+            NSLog("[AI] cover region: selector=%@ reason=%@", sel, parsed.reason ?? "")
+            return sel
+        } catch {
+            NSLog("[AI] cover region error: %@", error.localizedDescription)
+            return nil
+        }
+    }
 }
 

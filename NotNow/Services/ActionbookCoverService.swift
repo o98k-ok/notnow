@@ -99,31 +99,51 @@ actor ActionbookCoverService {
         return await executeCommandChain(commands: commands, url: url)
     }
     
-    /// 使用 Actionbook screenshot 生成封面
+    /// 使用 Actionbook screenshot 生成封面（优先 AI 分析 HTML 确定核心区域）
     private func performScreenshotFetch(url: URL) async -> BookmarkMetadata {
         let tempDir = FileManager.default.temporaryDirectory
         let screenshotPath = tempDir.appendingPathComponent("notnow_cover_\(UUID().uuidString).png").path
-        let focusScript = createFocusScreenshotScript()
-        
-        let commands = [
+
+        // 第1步：打开页面并获取结构
+        let structureScript = createPageStructureScript()
+        let openCommands = [
             buildCommand(args: ["browser", "open", url.absoluteString]),
             buildCommand(args: ["browser", "wait", "body", "--timeout", "10000"]),
             "sleep \(Int(pageSettleSeconds))",
+            buildCommand(args: ["browser", "eval", structureScript]),
+        ]
+        let (structureOutput, openExit) = await runShellCommand(openCommands.joined(separator: " && "))
+
+        var focusScript = createFocusScreenshotScript()
+        if openExit == 0, !structureOutput.isEmpty {
+            var pageStructure = structureOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            if pageStructure.hasPrefix("\"") && pageStructure.hasSuffix("\"") {
+                pageStructure = String(pageStructure.dropFirst().dropLast())
+                    .replacingOccurrences(of: "\\\"", with: "\"")
+                    .replacingOccurrences(of: "\\/", with: "/")
+            }
+            if let aiSelector = await AIService.shared.analyzeCoverRegion(pageStructure: pageStructure, url: url.absoluteString) {
+                NSLog("[Actionbook] AI selected selector: %@", aiSelector)
+                focusScript = createScrollToSelectorScript(selector: aiSelector)
+            }
+        }
+
+        // 第2步：滚动到目标区域并截图
+        let screenshotCommands = [
             buildCommand(args: ["browser", "eval", focusScript]),
             buildCommand(args: ["browser", "screenshot", screenshotPath]),
             buildCommand(args: ["browser", "close"]),
         ]
-        
-        let _ = await runShellCommand(commands.joined(separator: " && "))
-        
+        let _ = await runShellCommand(screenshotCommands.joined(separator: " && "))
+
         guard let imageData = try? Data(contentsOf: URL(fileURLWithPath: screenshotPath)) else {
             NSLog("[Actionbook] screenshot failed")
             cleanupFile(at: screenshotPath)
             return BookmarkMetadata()
         }
-        
+
         cleanupFile(at: screenshotPath)
-        let processed = cropScreenshotToWidth640(imageData) ?? imageData
+        let processed = cropToOGImage(imageData) ?? cropScreenshotToWidth640(imageData) ?? imageData
         NSLog("[Actionbook] screenshot success, original=%d bytes, processed=%d bytes", imageData.count, processed.count)
         return BookmarkMetadata(imageData: processed)
     }
@@ -216,6 +236,37 @@ actor ActionbookCoverService {
         return js.replacingOccurrences(of: "\"", with: "\\\"")
     }
     
+    /// 裁剪为 OG 封面比例（1.91:1），居中取景
+    private func cropToOGImage(_ data: Data, targetWidth: CGFloat = 1200, targetHeight: CGFloat = 630) -> Data? {
+        guard let image = NSImage(data: data),
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+        let width = CGFloat(cgImage.width)
+        let height = CGFloat(cgImage.height)
+        guard width > 0, height > 0 else { return nil }
+
+        let targetRatio = targetWidth / targetHeight
+        let currentRatio = width / height
+        let cropW: CGFloat
+        let cropH: CGFloat
+        if currentRatio > targetRatio {
+            cropH = height
+            cropW = height * targetRatio
+        } else {
+            cropW = width
+            cropH = width / targetRatio
+        }
+        let originX = (width - cropW) / 2
+        let originY = (height - cropH) / 2
+        let cropRect = CGRect(x: originX, y: originY, width: cropW, height: cropH)
+
+        guard let cropped = cgImage.cropping(to: cropRect) else { return nil }
+        let rep = NSBitmapImageRep(cgImage: cropped)
+        rep.size = NSSize(width: cropW, height: cropH)
+        return rep.representation(using: .png, properties: [:])
+    }
+
     /// 将截图裁剪为水平居中、宽度不超过 640 的区域，避免整页视图导致内容过小
     private func cropScreenshotToWidth640(_ data: Data, targetWidth: CGFloat = 640) -> Data? {
         guard let image = NSImage(data: data),
@@ -245,7 +296,69 @@ actor ActionbookCoverService {
         return rep.representation(using: .png, properties: [:])
     }
 
-    /// 截图前把页面滚动到主内容区域，提高截图命中重点区域的概率
+    /// 提取页面结构（供 AI 分析），返回 JSON
+    private func createPageStructureScript() -> String {
+        let js = #"""
+        (() => {
+            const vw = window.innerWidth || 1200;
+            const vh = window.innerHeight || 800;
+            const selectors = [
+                'main', 'article', '[role="main"]', '.hero', '.banner', '.post',
+                '.content', '#content', '.article', '.main-content', '.post-content',
+                '.entry-content', '.article__body', '.page-content', 'header img',
+                '.hero img', 'article img', 'main img', '.featured-image'
+            ];
+            const seen = new Set();
+            const elements = [];
+            for (const sel of selectors) {
+                const el = document.querySelector(sel);
+                if (!el || seen.has(el)) continue;
+                const rect = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+                if (rect.width < 80 || rect.height < 80) continue;
+                seen.add(el);
+                const id = el.id ? '#' + el.id : '';
+                const cls = el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).filter(c => /^[a-zA-Z]/.test(c)).join('.') : '';
+                let selector = el.tagName.toLowerCase() + (id || cls || '');
+                if (selector.length > 80) selector = sel;
+                elements.push({
+                    selector: selector,
+                    tag: el.tagName.toLowerCase(),
+                    rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+                    area: Math.round(rect.width * rect.height),
+                    inView: rect.top < vh && rect.bottom > 0
+                });
+            }
+            return JSON.stringify({ viewport: { w: vw, h: vh }, elements });
+        })()
+        """#
+        return js.replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    /// 滚动到指定选择器对应的元素
+    private func createScrollToSelectorScript(selector: String) -> String {
+        let safe = selector.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: " ")
+        let js = #"""
+        (() => {
+            try {
+                const el = document.querySelector("\#(safe)");
+                if (el) {
+                    el.scrollIntoView({ behavior: 'instant', block: 'start', inline: 'nearest' });
+                    const r = el.getBoundingClientRect();
+                    const targetY = Math.max(window.scrollY + r.top - 24, 0);
+                    window.scrollTo(0, targetY);
+                }
+            } catch (e) {}
+            return 'ok';
+        })()
+        """#
+        return js.replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    /// 截图前把页面滚动到主内容区域，提高截图命中重点区域的概率（AI 未配置时的兜底）
     private func createFocusScreenshotScript() -> String {
         let js = #"""
         (() => {

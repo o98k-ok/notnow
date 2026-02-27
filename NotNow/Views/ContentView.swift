@@ -14,10 +14,11 @@ struct ContentView: View {
 
     @AppStorage("accentTheme") private var accentThemeName = "purple"
     @State private var selection: SidebarSelection = .all
+    /// 已生效的搜索词（用于查询）
     @State private var searchText = ""
     @State private var showAddSheet = false
     @State private var selectedBookmark: Bookmark?
-    @State private var columnCount = 3
+    @State private var columnCount = 5
     @State private var showCategorySheet = false
     @State private var editingCategory: Category?
     @State private var isImporting = false
@@ -35,20 +36,20 @@ struct ContentView: View {
     @State private var isBatchMode = false
     @State private var selectedBookmarkIDs: Set<UUID> = []
     @State private var showSettings = false
-    @FocusState private var isSearchFocused: Bool
+    @State private var searchFocusRequest = 0
     /// 分页：首屏条数，滚动到底或最后一格出现时加载下一页
     private static let pageSize = 20
     @State private var bookmarks: [Bookmark] = []
     @State private var totalFilteredCount = 0
     @State private var allBookmarkCount = 0
     @State private var currentFetchLimit = ContentView.pageSize
-    @State private var searchDebounceTask: Task<Void, Never>?
     @State private var isLoadingMore = false
     @State private var categoryBookmarkCounts: [UUID: Int] = [:]
     @State private var uncategorizedBookmarkCount = 0
     @State private var columnBookmarksCache: [[Bookmark]] = []
     @State private var isBatchRetagging = false
     @State private var batchRetagProgressText = ""
+    private let searchDebounceNanoseconds: UInt64 = 450_000_000
 
     private var currentTheme: AccentTheme {
         AccentTheme(rawValue: accentThemeName) ?? .purple
@@ -102,7 +103,7 @@ struct ContentView: View {
             showAddSheet = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .focusSearch)) { _ in
-            isSearchFocused = true
+            searchFocusRequest += 1
         }
         .onAppear {
             NSLog("[NotNow] app appeared")
@@ -118,9 +119,6 @@ struct ContentView: View {
         .onChange(of: selection) {
             currentFetchLimit = ContentView.pageSize
             fetchBookmarks()
-        }
-        .onChange(of: searchText) {
-            scheduleSearchRefresh()
         }
         .onChange(of: columnCount) {
             columnBookmarksCache = splitIntoColumns(bookmarks: bookmarks, columns: columnCount)
@@ -141,10 +139,6 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .showSettings)) { _ in
             showSettings = true
-        }
-        .onDisappear {
-            searchDebounceTask?.cancel()
-            searchDebounceTask = nil
         }
     }
 
@@ -318,17 +312,13 @@ struct ContentView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.textTertiary)
-                TextField("搜索书签...", text: $searchText)
-                    .textFieldStyle(.plain)
-                    .font(.subheadline)
-                    .focused($isSearchFocused)
-                if !searchText.isEmpty {
-                    Button { searchText = "" } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.textTertiary)
-                    }
-                    .buttonStyle(.plain)
+                DebouncedSearchField(
+                    text: $searchText,
+                    focusRequest: searchFocusRequest,
+                    debounceNanoseconds: searchDebounceNanoseconds
+                ) {
+                    currentFetchLimit = ContentView.pageSize
+                    fetchBookmarks()
                 }
             }
             .padding(.horizontal, 12)
@@ -343,7 +333,7 @@ struct ContentView: View {
 
             // Columns
             HStack(spacing: 4) {
-                ForEach([2, 3, 4], id: \.self) { n in
+                ForEach([4, 5, 6], id: \.self) { n in
                     Button { columnCount = n } label: {
                         Image(systemName: gridIcon(for: n))
                             .font(.caption)
@@ -573,7 +563,7 @@ struct ContentView: View {
         }
     }
 
-    /// 底部固定：已显示数量 / 总数，以及加载中时的进度条
+    /// 底部固定：已显示数量 / 总数、加载进度，以及强制刷新按钮
     private func listProgressFooter() -> some View {
         VStack(spacing: 6) {
             if isLoadingMore {
@@ -583,11 +573,25 @@ struct ContentView: View {
                     .tint(currentTheme.color)
                     .padding(.horizontal, 22)
             }
-            Text(bookmarks.count >= totalFilteredCount
-                 ? "共 \(totalFilteredCount) 条"
-                 : "已显示 \(bookmarks.count) / \(totalFilteredCount) 条")
-                .font(.caption)
-                .foregroundStyle(AppTheme.textTertiary)
+            HStack {
+                Text(bookmarks.count >= totalFilteredCount
+                     ? "共 \(totalFilteredCount) 条"
+                     : "已显示 \(bookmarks.count) / \(totalFilteredCount) 条")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textTertiary)
+                Spacer()
+                Button {
+                    loadMore()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise")
+                        Text("强制刷新")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(currentTheme.color)
+                }
+                .buttonStyle(.plain)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
@@ -942,16 +946,6 @@ struct ContentView: View {
                  bm.desc.localizedStandardContains(q) ||
                  bm.notes.localizedStandardContains(q))
             }
-        }
-    }
-
-    private func scheduleSearchRefresh() {
-        searchDebounceTask?.cancel()
-        searchDebounceTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            guard !Task.isCancelled else { return }
-            currentFetchLimit = ContentView.pageSize
-            fetchBookmarks()
         }
     }
 
@@ -1486,6 +1480,66 @@ struct ContentView: View {
 
         await MainActor.run {
             try? modelContext.save()
+        }
+    }
+}
+
+private struct DebouncedSearchField: View {
+    @Binding var text: String
+    let focusRequest: Int
+    let debounceNanoseconds: UInt64
+    let onDebouncedCommit: () -> Void
+
+    @State private var draftText = ""
+    @State private var debounceTask: Task<Void, Never>?
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        Group {
+            TextField("搜索书签...", text: $draftText)
+                .textFieldStyle(.plain)
+                .font(.subheadline)
+                .focused($isFocused)
+            if !draftText.isEmpty {
+                Button {
+                    draftText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textTertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .onAppear {
+            draftText = text
+        }
+        .onChange(of: focusRequest) {
+            isFocused = true
+        }
+        .onChange(of: text) { _, newValue in
+            if newValue != draftText {
+                draftText = newValue
+            }
+        }
+        .onChange(of: draftText) {
+            scheduleCommit()
+        }
+        .onDisappear {
+            debounceTask?.cancel()
+            debounceTask = nil
+        }
+    }
+
+    private func scheduleCommit() {
+        debounceTask?.cancel()
+        debounceTask = Task { @MainActor in
+            let pending = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+            try? await Task.sleep(nanoseconds: debounceNanoseconds)
+            guard !Task.isCancelled else { return }
+            guard pending != text else { return }
+            text = pending
+            onDebouncedCommit()
         }
     }
 }
