@@ -44,3 +44,6 @@ Pods/
 
 # Carthage
 Carthage/Build/
+
+# Agent local config
+.amp/
