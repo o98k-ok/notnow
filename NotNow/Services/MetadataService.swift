@@ -18,6 +18,35 @@ actor MetadataService {
     }()
 
     func fetch(from urlString: String, fetchImage: Bool = true) async -> BookmarkMetadata {
+        // ========== 第1步：快速 HTTP 请求获取元数据 ==========
+        let fastResult = await fetchFast(urlString: urlString, fetchImage: fetchImage)
+        
+        // 如果成功获取到封面图，直接返回
+        if fastResult.imageData != nil {
+            NSLog("[Meta] fast fetch got cover, returning")
+            return fastResult
+        }
+        
+        // 如果不需要获取图片，直接返回（标题/描述已拿到）
+        if !fetchImage {
+            return fastResult
+        }
+        
+        // ========== 第2步：Actionbook 降级方案 ==========
+        NSLog("[Meta] fast fetch no cover, trying Actionbook fallback...")
+        let actionbookResult = await ActionbookCoverService.shared.fetchCover(from: urlString)
+        
+        // 合并结果：优先使用 fast 的 title/desc，actionbook 的 image
+        return BookmarkMetadata(
+            title: fastResult.title ?? actionbookResult.title,
+            description: fastResult.description ?? actionbookResult.description,
+            imageURL: actionbookResult.imageURL ?? fastResult.imageURL,
+            imageData: actionbookResult.imageData ?? fastResult.imageData
+        )
+    }
+    
+    /// 快速 HTTP 请求获取元数据（原有逻辑）
+    private func fetchFast(urlString: String, fetchImage: Bool) async -> BookmarkMetadata {
         guard let url = URL(string: urlString) else {
             NSLog("[Meta] invalid URL: %@", urlString)
             return BookmarkMetadata()
@@ -78,7 +107,7 @@ actor MetadataService {
                 imageURLStr = resolvedImageURL(from: imgStr, baseURL: url)?.absoluteString
             }
 
-            NSLog("[Meta] result: title=%d, desc=%d, image=%d", title != nil ? 1 : 0, description != nil ? 1 : 0, imageData != nil ? 1 : 0)
+            NSLog("[Meta] fast result: title=%d, desc=%d, image=%d", title != nil ? 1 : 0, description != nil ? 1 : 0, imageData != nil ? 1 : 0)
             return BookmarkMetadata(
                 title: title, description: description,
                 imageURL: imageURLStr, imageData: imageData
@@ -462,6 +491,126 @@ actor AIService {
             logLines.append("error = \(error.localizedDescription)")
             let log = logLines.joined(separator: "\n")
             storeLog(log)
+            return nil
+        }
+    }
+
+    func refineSnippet(
+        content: String,
+        originalTitle: String, originalDesc: String
+    ) async -> AITitleDescription? {
+        var logLines: [String] = []
+        logLines.append("AI snippet request started")
+        logLines.append("content.length = \(content.count)")
+
+        guard let cfg = AIConfig.load() else {
+            logLines.append("config = missing or disabled")
+            storeLog(logLines.joined(separator: "\n"))
+            return nil
+        }
+
+        let trimmedContent = String(content.prefix(4000))
+
+        struct ChatRequest: Encodable {
+            struct Message: Encodable {
+                let role: String
+                let content: String
+            }
+            let model: String
+            let messages: [Message]
+            let temperature: Double
+        }
+
+        let systemPrompt =
+            """
+            你是一个为稍后阅读应用生成中文标题、简介和标签的助手。
+            用户保存了一段 Markdown 文字片段，请根据内容生成标题、描述和标签。
+            请只输出一个 JSON 对象，不要输出多余文字，格式为：
+            {
+              "title": "字符串，为片段起一个简洁的标题",
+              "description": "字符串，摘要描述，不超过 80 个中文字符",
+              "tags": ["tag1", "tag2", ...]  // 可选，0~5 个短标签
+            }
+            tags 应该是简短的中文或英文关键词，不要包含空字符串或重复项。
+            """
+        let userContent = """
+        原始标题: \(originalTitle)
+        原始描述: \(originalDesc)
+
+        片段内容:
+        \(trimmedContent)
+        """
+
+        let body = ChatRequest(
+            model: cfg.model,
+            messages: [
+                .init(role: "system", content: systemPrompt),
+                .init(role: "user", content: userContent),
+            ],
+            temperature: 0.3
+        )
+
+        guard let payload = try? JSONEncoder().encode(body) else {
+            logLines.append("error = encode request failed")
+            storeLog(logLines.joined(separator: "\n"))
+            return nil
+        }
+
+        var request = URLRequest(url: cfg.apiURL, timeoutInterval: 20)
+        request.httpMethod = "POST"
+        request.httpBody = payload
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !cfg.apiKey.isEmpty {
+            request.setValue("Bearer \(cfg.apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            logLines.append("status = \(status)")
+            guard (200 ... 299).contains(status) else {
+                logLines.append("error = non-2xx status")
+                storeLog(logLines.joined(separator: "\n"))
+                return nil
+            }
+
+            struct ChatResponse: Decodable {
+                struct Choice: Decodable {
+                    struct Message: Decodable { let content: String }
+                    let message: Message
+                }
+                let choices: [Choice]
+            }
+
+            guard let decoded = try? JSONDecoder().decode(ChatResponse.self, from: data),
+                let content = decoded.choices.first?.message.content
+            else {
+                logLines.append("error = decode chat response failed")
+                storeLog(logLines.joined(separator: "\n"))
+                return nil
+            }
+
+            struct Parsed: Decodable {
+                let title: String?
+                let description: String?
+                let tags: [String]?
+            }
+
+            guard let jsonData = content.data(using: .utf8),
+                let parsed = try? JSONDecoder().decode(Parsed.self, from: jsonData)
+            else {
+                logLines.append("error = message is not valid JSON")
+                storeLog(logLines.joined(separator: "\n"))
+                return nil
+            }
+
+            logLines.append("decoded.title = \(parsed.title ?? "nil")")
+            logLines.append("decoded.tags.count = \(parsed.tags?.count ?? 0)")
+            storeLog(logLines.joined(separator: "\n"))
+            return AITitleDescription(title: parsed.title, desc: parsed.description, tags: parsed.tags)
+        } catch {
+            logLines.append("error = \(error.localizedDescription)")
+            storeLog(logLines.joined(separator: "\n"))
             return nil
         }
     }

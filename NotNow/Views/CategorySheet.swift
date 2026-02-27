@@ -165,6 +165,8 @@ struct CategorySheet: View {
             let cat = Category(name: name, icon: icon, colorHex: colorHex)
             modelContext.insert(cat)
         }
+        try? modelContext.save()
+        NotificationCenter.default.post(name: .modelDataDidChange, object: nil)
         dismiss()
     }
 }

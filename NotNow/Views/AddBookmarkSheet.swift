@@ -22,6 +22,8 @@ struct AddBookmarkSheet: View {
     @State private var coverTask: Task<Void, Never>?
     @State private var manualCoverOverride = false
     @State private var aiRefined = false
+    @State private var kind: BookmarkKind = .link
+    @State private var snippetContent = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,8 +34,18 @@ struct AddBookmarkSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // URL Input
                     VStack(alignment: .leading, spacing: 6) {
+                        fieldLabel("类型")
+                        Picker("", selection: $kind) {
+                            Text("链接").tag(BookmarkKind.link)
+                            Text("片段").tag(BookmarkKind.snippet)
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
+                    // URL Input
+                    if kind == .link {
+                        VStack(alignment: .leading, spacing: 6) {
                         fieldLabel("链接")
                         HStack(spacing: 8) {
                             HStack(spacing: 8) {
@@ -65,9 +77,12 @@ struct AddBookmarkSheet: View {
                             .disabled(url.isEmpty || isFetching)
                         }
                     }
+                    }
 
                     // Cover Section
-                    coverSection
+                    if kind == .link {
+                        coverSection
+                    }
 
                     // Title
                     VStack(alignment: .leading, spacing: 6) {
@@ -104,6 +119,49 @@ struct AddBookmarkSheet: View {
                         TextField("输入描述", text: $desc)
                             .darkTextField()
                             .font(.subheadline)
+                    }
+
+                    if kind == .snippet {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                fieldLabel("内容")
+                                Spacer()
+                                if aiEnabled {
+                                    Button {
+                                        refineSnippetMetadata()
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            if isFetching {
+                                                ProgressView()
+                                                    .controlSize(.mini)
+                                            } else {
+                                                Image(systemName: "sparkles")
+                                                    .font(.system(size: 11, weight: .medium))
+                                            }
+                                            Text("AI 打标")
+                                                .font(.system(size: 11, weight: .medium))
+                                        }
+                                        .foregroundStyle(AppTheme.accent)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(snippetContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isFetching)
+                                    .opacity(snippetContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.4 : 1)
+                                }
+                            }
+                            TextEditor(text: $snippetContent)
+                                .font(.system(.subheadline, design: .monospaced))
+                                .scrollContentBackground(.hidden)
+                                .padding(10)
+                                .frame(minHeight: 140)
+                                .background(AppTheme.bgInput)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                                )
+                        }
+
+
                     }
 
                     // Category
@@ -162,8 +220,8 @@ struct AddBookmarkSheet: View {
                     .accentButtonStyle()
                     .buttonStyle(.plain)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(url.isEmpty)
-                    .opacity(url.isEmpty ? 0.5 : 1)
+                    .disabled(kind == .link ? url.isEmpty : snippetContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .opacity((kind == .link ? url.isEmpty : snippetContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ? 0.5 : 1)
             }
             .padding(20)
             .background(AppTheme.bgSecondary.opacity(0.5))
@@ -252,6 +310,7 @@ struct AddBookmarkSheet: View {
     // MARK: - Actions
 
     private func fetchMetadata() {
+        guard kind == .link else { return }
         var normalized = url.trimmingCharacters(in: .whitespacesAndNewlines)
         if !normalized.hasPrefix("http://"), !normalized.hasPrefix("https://") {
             normalized = "https://\(normalized)"
@@ -335,22 +394,81 @@ struct AddBookmarkSheet: View {
         }
     }
 
+    private func refineSnippetMetadata() {
+        let content = snippetContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { return }
+        metadataTask?.cancel()
+        aiRefined = false
+        isFetching = true
+        metadataTask = Task {
+            let ai = await AIService.shared.refineSnippet(
+                content: content,
+                originalTitle: title, originalDesc: desc
+            )
+            if Task.isCancelled { return }
+            await MainActor.run {
+                if Task.isCancelled { return }
+                isFetching = false
+                guard let ai else { return }
+                var didChange = false
+                if let t = ai.title, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    title = t; didChange = true
+                }
+                if let d = ai.desc, !d.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    desc = d; didChange = true
+                }
+                if let tagList = ai.tags, !tagList.isEmpty {
+                    let normalizedTags = tagList
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                    if !normalizedTags.isEmpty {
+                        let existing = tagsText.split(separator: ",")
+                            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            .filter { !$0.isEmpty }
+                        var seen = Set<String>()
+                        let combined = (existing + normalizedTags).filter { tag in
+                            let lower = tag.lowercased()
+                            if seen.contains(lower) { return false }
+                            seen.insert(lower)
+                            return true
+                        }
+                        tagsText = combined.joined(separator: ", ")
+                    }
+                }
+                if didChange { aiRefined = true }
+            }
+        }
+    }
+
     private func save() {
         let tags =
             tagsText.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+        let finalURL: String = {
+            if kind == .snippet {
+                return "snippet://\(UUID().uuidString)"
+            }
+            return url
+        }()
         let bookmark = Bookmark(
-            url: url, title: title, desc: desc,
+            url: finalURL, title: title, desc: desc,
             coverURL: coverURL, coverData: coverData,
             tags: tags, notes: notes
         )
+        bookmark.bookmarkKind = kind
+        if kind == .snippet {
+            bookmark.snippetContent = snippetContent
+        }
         bookmark.category = categories.first { $0.id == selectedCategoryID }
         modelContext.insert(bookmark)
+        try? modelContext.save()
+        NotificationCenter.default.post(name: .modelDataDidChange, object: nil)
         dismiss()
     }
 
     private func pasteFromClipboard() {
+        guard kind == .link else { return }
         guard let raw = NSPasteboard.general.string(forType: .string) else { return }
         let content = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let parsed = URL(string: content),

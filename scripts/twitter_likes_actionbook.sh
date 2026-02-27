@@ -36,10 +36,19 @@ IDLE_LIMIT="${TWITTER_LIKES_IDLE_LIMIT:-8}"
 idle_rounds=0
 
 cleanup() {
-  "$ACTIONBOOK_BIN" --browser-mode "$AB_MODE" browser close >/dev/null 2>&1 || true
+  close_browser_force
   rm -f "$TMP_FILE"
 }
 trap cleanup EXIT
+
+close_browser_force() {
+  local i
+  for i in 1 2 3; do
+    "$ACTIONBOOK_BIN" --browser-mode "$AB_MODE" browser close >/dev/null 2>&1 || true
+    "$ACTIONBOOK_BIN" --browser-mode "$AB_MODE" browser eval "window.close(); 'ok'" >/dev/null 2>&1 || true
+    sleep 1
+  done
+}
 
 if ! open_err="$("$ACTIONBOOK_BIN" --browser-mode "$AB_MODE" browser open "$LIKES_URL" 2>&1 >/dev/null)"; then
   echo "open 失败: $open_err" >&2

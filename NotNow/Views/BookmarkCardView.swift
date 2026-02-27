@@ -28,28 +28,49 @@ private actor CoverDecodeLimiter {
 /// In-memory cache for decoded cover images to avoid repeated main-thread decode during scroll.
 private enum CoverImageCache {
     private static let maxEntries = 80
-    private static var cache: [UUID: NSImage] = [:]
-    private static var order: [UUID] = []
+    private struct CacheKey: Hashable {
+        let id: UUID
+        let signature: UInt64
+    }
+    private static var cache: [CacheKey: NSImage] = [:]
+    private static var order: [CacheKey] = []
     private static let lock = NSLock()
 
     static func image(for id: UUID, data: Data?) -> NSImage? {
-        guard data != nil else { return nil }
+        guard let data else { return nil }
+        let key = CacheKey(id: id, signature: signature(for: data))
         lock.lock()
         defer { lock.unlock() }
-        if let cached = cache[id] { return cached }
+        if let cached = cache[key] { return cached }
         return nil
     }
 
-    static func set(_ image: NSImage?, for id: UUID) {
+    static func set(_ image: NSImage?, for id: UUID, data: Data) {
+        guard let image else { return }
+        let key = CacheKey(id: id, signature: signature(for: data))
         lock.lock()
-        if cache[id] != nil { lock.unlock(); return }
+        if cache[key] != nil { lock.unlock(); return }
         while order.count >= maxEntries, let first = order.first {
             order.removeFirst()
             cache[first] = nil
         }
-        cache[id] = image
-        order.append(id)
+        cache[key] = image
+        order.append(key)
         lock.unlock()
+    }
+
+    private static func signature(for data: Data) -> UInt64 {
+        var hash: UInt64 = UInt64(data.count)
+        let prefixCount = min(32, data.count)
+        for byte in data.prefix(prefixCount) {
+            hash = (hash &* 16777619) ^ UInt64(byte)
+        }
+        if data.count > 32 {
+            for byte in data.suffix(16) {
+                hash = (hash &* 16777619) ^ UInt64(byte)
+            }
+        }
+        return hash
     }
 }
 
@@ -76,12 +97,8 @@ struct BookmarkCardView: View {
             guard bookmark.hasCover, displayCover == nil else { return }
             Task { await loadCoverIfNeeded() }
         }
-        .onChange(of: bookmark.updatedAt) {
-            if bookmark.hasCover { Task { await loadCoverIfNeeded() } }
-            else { displayCover = nil }
-        }
-        .onChange(of: bookmark.createdAt) {
-            refreshRelativeCreatedAtText()
+        .onChange(of: bookmark.coverData) {
+            Task { await loadCoverIfNeeded() }
         }
     }
 
@@ -96,14 +113,19 @@ struct BookmarkCardView: View {
         }
         await CoverDecodeLimiter.shared.acquire()
         defer { Task { await CoverDecodeLimiter.shared.release() } }
-        let decoded = await Task.detached(priority: .utility) {
-            NSImage(data: data)
+        // 在后台线程解码，但返回 CGImage 避免 Sendable 问题
+        let cgImage = await Task.detached(priority: .utility) { () -> CGImage? in
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+            return CGImageSourceCreateImageAtIndex(source, 0, nil)
         }.value
         await MainActor.run {
-            if let decoded {
-                CoverImageCache.set(decoded, for: bookmark.id)
+            if let cgImage {
+                let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                CoverImageCache.set(image, for: bookmark.id, data: data)
+                displayCover = image
+            } else {
+                displayCover = nil
             }
-            displayCover = decoded
         }
     }
 
@@ -155,6 +177,10 @@ struct BookmarkCardView: View {
                         .aspectRatio(contentMode: .fill)
                         .frame(height: 130)
                         .clipped()
+                } else {
+                    Rectangle()
+                        .fill(AppTheme.bgInput)
+                        .frame(height: 130)
                 }
 
                 // Gradient overlay

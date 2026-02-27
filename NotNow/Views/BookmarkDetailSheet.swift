@@ -218,6 +218,7 @@ struct BookmarkDetailSheet: View {
         .onChange(of: bookmark.notes) { bookmark.updatedAt = Date() }
         .onDisappear {
             coverFetchTask?.cancel()
+            NotificationCenter.default.post(name: .modelDataDidChange, object: nil)
         }
         .sheet(isPresented: $showOpenWith) {
             OpenWithSheet(bookmark: bookmark)
@@ -233,31 +234,14 @@ struct BookmarkDetailSheet: View {
                 fieldLabel("封面")
                 Spacer()
                 HStack(spacing: 8) {
-                    // Re-fetch cover
-                    Button { refetchCover() } label: {
-                        HStack(spacing: 4) {
-                            if isFetchingCover {
-                                ProgressView().controlSize(.mini)
-                            } else {
-                                Image(systemName: "arrow.clockwise")
-                            }
-                            Text("重新获取")
-                        }
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(AppTheme.accent)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(AppTheme.accent.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isFetchingCover)
+                    // 获取方式菜单
+                    coverFetchMenu
 
-                    // Upload custom
+                    // 上传本地文件
                     Button { pickImage() } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "photo.badge.plus")
-                            Text("自定义")
+                            Text("本地文件")
                         }
                         .font(.caption.weight(.medium))
                         .foregroundStyle(AppTheme.accentCyan)
@@ -290,12 +274,13 @@ struct BookmarkDetailSheet: View {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(maxHeight: 160)
+                    .frame(maxWidth: .infinity, maxHeight: 160)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
                             .stroke(AppTheme.borderSubtle, lineWidth: 1)
                     )
+                    .allowsHitTesting(false)
             } else {
                 // Placeholder
                 Button { pickImage() } label: {
@@ -303,7 +288,7 @@ struct BookmarkDetailSheet: View {
                         Image(systemName: "photo")
                             .font(.title3)
                             .foregroundStyle(AppTheme.textTertiary)
-                        Text("无封面 — 点击上传或重新获取")
+                        Text("无封面 — 点击选择获取方式或上传本地文件")
                             .font(.caption)
                             .foregroundStyle(AppTheme.textTertiary)
                     }
@@ -319,6 +304,57 @@ struct BookmarkDetailSheet: View {
                 .buttonStyle(.plain)
             }
         }
+    }
+
+    /// 封面获取方式菜单
+    private var coverFetchMenu: some View {
+        Menu {
+            Button {
+                refetchCover(mode: .api)
+            } label: {
+                Label("API 获取", systemImage: "network")
+            }
+            
+            Divider()
+            
+            Button {
+                refetchCover(mode: .actionbookEval)
+            } label: {
+                Label("Actionbook 提取", systemImage: "doc.text.magnifyingglass")
+            }
+            
+            Button {
+                refetchCover(mode: .actionbookScreenshot)
+            } label: {
+                Label("Actionbook 截图", systemImage: "photo.on.rectangle.angled")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                if isFetchingCover {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+                Text("获取")
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(AppTheme.accent)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(AppTheme.accent.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .disabled(isFetchingCover)
+    }
+    
+    /// 封面获取方式
+    private enum CoverFetchMode {
+        case api
+        case actionbookEval
+        case actionbookScreenshot
     }
 
     // MARK: - Open With
@@ -404,24 +440,44 @@ struct BookmarkDetailSheet: View {
         .buttonStyle(.plain)
     }
 
-    private func refetchCover() {
+    private func refetchCover(mode: CoverFetchMode) {
         guard !bookmark.url.isEmpty else { return }
         coverFetchTask?.cancel()
         isFetchingCover = true
         let currentURL = bookmark.url
         coverFetchTask = Task {
-            let metadata = await MetadataService.shared.fetch(from: currentURL, fetchImage: false)
-            if Task.isCancelled { return }
             var imageData: Data?
-            if let imageURL = metadata.imageURL, !imageURL.isEmpty {
-                imageData = await MetadataService.shared.fetchImageData(from: imageURL)
+            var imageURL: String?
+            
+            switch mode {
+            case .api:
+                // 方式1: API 获取
+                let metadata = await MetadataService.shared.fetch(from: currentURL, fetchImage: false)
+                imageURL = metadata.imageURL
+                if let url = imageURL, !url.isEmpty {
+                    imageData = await MetadataService.shared.fetchImageData(from: url)
+                }
+                
+            case .actionbookEval:
+                // 方式2: Actionbook 提取
+                let metadata = await ActionbookCoverService.shared.fetchWithEval(from: currentURL)
+                imageURL = metadata.imageURL
+                imageData = metadata.imageData
+                
+            case .actionbookScreenshot:
+                // 方式3: Actionbook 截图
+                let metadata = await ActionbookCoverService.shared.fetchWithScreenshot(from: currentURL)
+                imageData = metadata.imageData
             }
+            
             if Task.isCancelled { return }
             await MainActor.run {
                 if Task.isCancelled || bookmark.url != currentURL { return }
-                if let data = imageData { bookmark.coverData = data }
-                bookmark.coverURL = metadata.imageURL
-                bookmark.updatedAt = Date()
+                if let data = imageData {
+                    bookmark.coverData = data
+                    bookmark.coverURL = imageURL
+                    bookmark.updatedAt = Date()
+                }
                 isFetchingCover = false
             }
         }

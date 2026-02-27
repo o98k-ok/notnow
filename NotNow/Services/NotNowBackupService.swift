@@ -34,13 +34,16 @@ struct NotNowExportBookmark: Encodable {
     let coverURL: String?
     let tags: [String]
     let notes: String
-    let isRead: Bool
     let isFavorite: Bool
     let createdAt: Date
     let updatedAt: Date
     let categoryId: String?
     let openWithApp: String?
     let openWithScript: String?
+    let kind: String
+    let snippetContent: String
+    let snippetLanguage: String?
+    let snippetFormat: String?
 }
 
 struct NotNowExportAppConfig: Codable {
@@ -70,13 +73,16 @@ struct NotNowImportBookmark: Decodable {
     let coverURL: String?
     let tags: [String]
     let notes: String
-    let isRead: Bool
     let isFavorite: Bool
     let createdAt: Date
     let updatedAt: Date
     let categoryId: String?
     let openWithApp: String?
     let openWithScript: String?
+    let kind: String?
+    let snippetContent: String?
+    let snippetLanguage: String?
+    let snippetFormat: String?
 }
 
 struct NotNowImportStats {
@@ -175,13 +181,16 @@ enum NotNowBackupService {
                 coverURL: b.coverURL,
                 tags: b.tags,
                 notes: b.notes,
-                isRead: b.isRead,
                 isFavorite: b.isFavorite,
                 createdAt: b.createdAt,
                 updatedAt: b.updatedAt,
                 categoryId: b.category?.id.uuidString,
                 openWithApp: b.openWithApp,
-                openWithScript: b.openWithScript
+                openWithScript: b.openWithScript,
+                kind: b.kind ?? BookmarkKind.link.rawValue,
+                snippetContent: b.snippetContent ?? "",
+                snippetLanguage: b.snippetLanguage,
+                snippetFormat: b.snippetFormat
             )
         }
         guard let bmData = try? encoder.encode(bmDtos) else {
@@ -314,13 +323,16 @@ enum NotNowBackupService {
                 tags: b.tags,
                 notes: b.notes
             )
-            bm.isRead = b.isRead
             bm.isFavorite = b.isFavorite
             bm.createdAt = b.createdAt
             bm.updatedAt = b.updatedAt
             bm.category = cat
             bm.openWithApp = b.openWithApp
             bm.openWithScript = b.openWithScript
+            bm.kind = b.kind ?? BookmarkKind.link.rawValue
+            bm.snippetContent = b.snippetContent ?? ""
+            bm.snippetLanguage = b.snippetLanguage
+            bm.snippetFormat = b.snippetFormat
             modelContext.insert(bm)
 
             let coverPath = coversDir.appendingPathComponent(b.id).path

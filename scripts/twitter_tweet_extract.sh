@@ -18,11 +18,20 @@ if ! command -v "$ACTIONBOOK_BIN" >/dev/null 2>&1; then
 fi
 
 cleanup() {
-  "$ACTIONBOOK_BIN" --browser-mode "$AB_MODE" browser close >/dev/null 2>&1 || true
+  close_browser_force
 }
 trap cleanup EXIT
 
-"$ACTIONBOOK_BIN" --browser-mode "$AB_MODE" browser close >/dev/null 2>&1 || true
+close_browser_force() {
+  local i
+  for i in 1 2 3; do
+    "$ACTIONBOOK_BIN" --browser-mode "$AB_MODE" browser close >/dev/null 2>&1 || true
+    "$ACTIONBOOK_BIN" --browser-mode "$AB_MODE" browser eval "window.close(); 'ok'" >/dev/null 2>&1 || true
+    sleep 1
+  done
+}
+
+close_browser_force
 "$ACTIONBOOK_BIN" --browser-mode "$AB_MODE" browser open "$TWEET_URL" >/dev/null 2>&1 || true
 "$ACTIONBOOK_BIN" --browser-mode "$AB_MODE" browser wait "body" --timeout 10000 >/dev/null 2>&1 || true
 "$ACTIONBOOK_BIN" --browser-mode "$AB_MODE" browser wait "article" --timeout 10000 >/dev/null 2>&1 || true

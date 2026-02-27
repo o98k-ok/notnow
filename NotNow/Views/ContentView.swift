@@ -10,7 +10,6 @@ enum SidebarSelection: Hashable {
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \Bookmark.createdAt, order: .reverse) private var bookmarks: [Bookmark]
     @Query(sort: \Category.sortOrder) private var categories: [Category]
 
     @AppStorage("accentTheme") private var accentThemeName = "purple"
@@ -39,18 +38,17 @@ struct ContentView: View {
     @FocusState private var isSearchFocused: Bool
     /// 分页：首屏条数，滚动到底或最后一格出现时加载下一页
     private static let pageSize = 20
-    @State private var displayedCount = ContentView.pageSize
+    @State private var bookmarks: [Bookmark] = []
+    @State private var totalFilteredCount = 0
+    @State private var allBookmarkCount = 0
+    @State private var currentFetchLimit = ContentView.pageSize
+    @State private var searchDebounceTask: Task<Void, Never>?
     @State private var isLoadingMore = false
-    @State private var filteredBookmarksCache: [Bookmark] = []
     @State private var categoryBookmarkCounts: [UUID: Int] = [:]
     @State private var uncategorizedBookmarkCount = 0
-    @State private var visibleBookmarksCache: [Bookmark] = []
     @State private var columnBookmarksCache: [[Bookmark]] = []
-    @State private var refreshTask: Task<Void, Never>?
     @State private var isBatchRetagging = false
     @State private var batchRetagProgressText = ""
-
-    private var filteredBookmarks: [Bookmark] { filteredBookmarksCache }
 
     private var currentTheme: AccentTheme {
         AccentTheme(rawValue: accentThemeName) ?? .purple
@@ -97,7 +95,7 @@ struct ContentView: View {
             .preferredColorScheme(.dark)
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView(bookmarks: bookmarks, categories: categories)
+            SettingsView(categories: categories)
                 .preferredColorScheme(.dark)
         }
         .onReceive(NotificationCenter.default.publisher(for: .addBookmark)) { _ in
@@ -107,29 +105,34 @@ struct ContentView: View {
             isSearchFocused = true
         }
         .onAppear {
-            NSLog("[NotNow] app appeared, bookmarks: %d", bookmarks.count)
+            NSLog("[NotNow] app appeared")
             ensureFavoriteCategoryExists()
-            refreshDerivedCollections()
+            refreshAll()
         }
         .onChange(of: showCategorySheet) {
-            if !showCategorySheet { editingCategory = nil }
-        }
-        .onChange(of: bookmarks) {
-            scheduleDerivedRefresh()
+            if !showCategorySheet {
+                editingCategory = nil
+                refreshAll()
+            }
         }
         .onChange(of: selection) {
-            displayedCount = ContentView.pageSize
-            refreshDerivedCollections()
+            currentFetchLimit = ContentView.pageSize
+            fetchBookmarks()
         }
         .onChange(of: searchText) {
-            displayedCount = ContentView.pageSize
-            scheduleDerivedRefresh()
-        }
-        .onChange(of: displayedCount) {
-            refreshVisibleLayout()
+            scheduleSearchRefresh()
         }
         .onChange(of: columnCount) {
-            refreshVisibleLayout()
+            columnBookmarksCache = splitIntoColumns(bookmarks: bookmarks, columns: columnCount)
+        }
+        .onChange(of: showAddSheet) {
+            if !showAddSheet { refreshAll() }
+        }
+        .onChange(of: selectedBookmark) { oldValue, newValue in
+            if oldValue != nil && newValue == nil { refreshAll() }
+        }
+        .onChange(of: showImportSheet) {
+            if !showImportSheet { refreshAll() }
         }
         .alert("导入结果", isPresented: $showImportAlert) {
             Button("好的", role: .cancel) {}
@@ -140,8 +143,8 @@ struct ContentView: View {
             showSettings = true
         }
         .onDisappear {
-            refreshTask?.cancel()
-            refreshTask = nil
+            searchDebounceTask?.cancel()
+            searchDebounceTask = nil
         }
     }
 
@@ -166,7 +169,7 @@ struct ContentView: View {
             sidebarItem(
                 label: "全部", icon: "square.grid.2x2",
                 isActive: selection == .all,
-                count: bookmarks.count,
+                count: allBookmarkCount,
                 accentColor: currentTheme.color
             ) { selection = .all }
 
@@ -362,7 +365,7 @@ struct ContentView: View {
                     Button {
                         toggleSelectAll()
                     } label: {
-                        Text(selectedBookmarkIDs.count == filteredBookmarks.count ? "清空" : "全选")
+                        Text(selectedBookmarkIDs.count == bookmarks.count ? "清空" : "全选")
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
                             .ghostButtonStyle()
@@ -506,12 +509,13 @@ struct ContentView: View {
         return result
     }
 
-    private func loadMore(totalCount: Int) {
-        guard !isLoadingMore else { return }
+    private func loadMore() {
+        guard !isLoadingMore, bookmarks.count < totalFilteredCount else { return }
         isLoadingMore = true
-        displayedCount = min(displayedCount + ContentView.pageSize, totalCount)
+        currentFetchLimit += ContentView.pageSize
+        fetchBookmarks()
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 400_000_000)
+            try? await Task.sleep(nanoseconds: 200_000_000)
             isLoadingMore = false
         }
     }
@@ -520,11 +524,10 @@ struct ContentView: View {
         GeometryReader { proxy in
             VStack(spacing: 0) {
                 ScrollView {
-                    if filteredBookmarks.isEmpty {
+                    if bookmarks.isEmpty {
                         emptyState
                     } else {
                         let contentWidth = max(proxy.size.width - 44, 1)
-                        let totalCount = filteredBookmarks.count
                         let spacing: CGFloat = 14
                         let columnWidth = (contentWidth - spacing * CGFloat(columnCount - 1)) / CGFloat(max(columnCount, 1))
 
@@ -537,8 +540,8 @@ struct ContentView: View {
                                             bookmarkCell(for: bm)
                                                 .onAppear {
                                                     let isLastInColumn = index == columnBookmarks.count - 1
-                                                    if isLastInColumn, displayedCount < totalCount {
-                                                        loadMore(totalCount: totalCount)
+                                                    if isLastInColumn, bookmarks.count < totalFilteredCount {
+                                                        loadMore()
                                                     }
                                                 }
                                         }
@@ -548,10 +551,10 @@ struct ContentView: View {
                             }
                             .frame(width: contentWidth, alignment: .topLeading)
 
-                            if displayedCount < totalCount {
+                            if bookmarks.count < totalFilteredCount {
                                 Color.clear
                                     .frame(height: 20)
-                                    .onAppear { loadMore(totalCount: totalCount) }
+                                    .onAppear { loadMore() }
                             }
                         }
                         .padding(.horizontal, 22)
@@ -560,15 +563,15 @@ struct ContentView: View {
                 }
                 .scrollIndicators(.visible)
 
-                if !filteredBookmarks.isEmpty {
-                    listProgressFooter(totalCount: filteredBookmarks.count)
+                if !bookmarks.isEmpty {
+                    listProgressFooter()
                 }
             }
         }
     }
 
     /// 底部固定：已显示数量 / 总数，以及加载中时的进度条
-    private func listProgressFooter(totalCount: Int) -> some View {
+    private func listProgressFooter() -> some View {
         VStack(spacing: 6) {
             if isLoadingMore {
                 ProgressView()
@@ -577,9 +580,9 @@ struct ContentView: View {
                     .tint(currentTheme.color)
                     .padding(.horizontal, 22)
             }
-            Text(displayedCount >= totalCount
-                 ? "共 \(totalCount) 条"
-                 : "已显示 \(displayedCount) / \(totalCount) 条")
+            Text(bookmarks.count >= totalFilteredCount
+                 ? "共 \(totalFilteredCount) 条"
+                 : "已显示 \(bookmarks.count) / \(totalFilteredCount) 条")
                 .font(.caption)
                 .foregroundStyle(AppTheme.textTertiary)
         }
@@ -652,7 +655,10 @@ struct ContentView: View {
         }
         Button("编辑") { selectedBookmark = bm }
         Divider()
-        Button("删除", role: .destructive) { modelContext.delete(bm) }
+        Button("删除", role: .destructive) {
+            modelContext.delete(bm)
+            refreshAll()
+        }
     }
 
     private func bookmarkCell(for bookmark: Bookmark) -> some View {
@@ -709,7 +715,7 @@ struct ContentView: View {
     }
 
     private func toggleSelectAll() {
-        let visibleIDs = Set(filteredBookmarks.map(\.id))
+        let visibleIDs = Set(bookmarks.map(\.id))
         if selectedBookmarkIDs.count == visibleIDs.count {
             selectedBookmarkIDs.removeAll()
         } else {
@@ -727,6 +733,7 @@ struct ContentView: View {
         try? modelContext.save()
         selectedBookmarkIDs.removeAll()
         isBatchMode = false
+        refreshAll()
     }
 
     private func deleteSelected() {
@@ -738,6 +745,7 @@ struct ContentView: View {
         try? modelContext.save()
         selectedBookmarkIDs.removeAll()
         isBatchMode = false
+        refreshAll()
     }
 
     private func toggleFavorite(_ bm: Bookmark) {
@@ -756,6 +764,7 @@ struct ContentView: View {
         }
         
         try? modelContext.save()
+        refreshAll()
     }
 
     private func ensureFavoriteCategory() -> Category {
@@ -835,47 +844,96 @@ struct ContentView: View {
         }
     }
 
-    private func refreshDerivedCollections() {
-        var counts: [UUID: Int] = [:]
-        var uncat = 0
-        for bm in bookmarks {
-            if let id = bm.category?.id {
-                counts[id, default: 0] += 1
-            } else {
-                uncat += 1
-            }
-        }
-        categoryBookmarkCounts = counts
-        uncategorizedBookmarkCount = uncat
-
-        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        filteredBookmarksCache = bookmarks.filter { bm in
-            switch selection {
-            case .all: break
-            case .category(let id):
-                guard bm.category?.id == id else { return false }
-            case .uncategorized:
-                guard bm.category == nil else { return false }
-            }
-
-            if q.isEmpty { return true }
-            return bm.title.lowercased().contains(q)
-                || bm.url.lowercased().contains(q)
-                || bm.desc.lowercased().contains(q)
-                || bm.snippetText.lowercased().contains(q)
-                || bm.notes.lowercased().contains(q)
-                || bm.tags.contains { $0.lowercased().contains(q) }
-                || bm.domain.lowercased().contains(q)
-        }
-
-        let validIDs = Set(filteredBookmarksCache.map(\.id))
-        selectedBookmarkIDs = selectedBookmarkIDs.intersection(validIDs)
-        refreshVisibleLayout()
+    private func refreshAll() {
+        fetchSidebarCounts()
+        fetchBookmarks()
     }
 
-    private func refreshVisibleLayout() {
-        visibleBookmarksCache = Array(filteredBookmarksCache.prefix(displayedCount))
-        columnBookmarksCache = splitIntoColumns(bookmarks: visibleBookmarksCache, columns: columnCount)
+    private func fetchSidebarCounts() {
+        allBookmarkCount = (try? modelContext.fetchCount(FetchDescriptor<Bookmark>())) ?? 0
+
+        var counts: [UUID: Int] = [:]
+        for cat in categories {
+            let catID = cat.id
+            let desc = FetchDescriptor<Bookmark>(predicate: #Predicate<Bookmark> { $0.category?.id == catID })
+            counts[catID] = (try? modelContext.fetchCount(desc)) ?? 0
+        }
+        categoryBookmarkCounts = counts
+
+        let uncatDesc = FetchDescriptor<Bookmark>(predicate: #Predicate<Bookmark> { $0.category == nil })
+        uncategorizedBookmarkCount = (try? modelContext.fetchCount(uncatDesc)) ?? 0
+    }
+
+    private func fetchBookmarks() {
+        let predicate = currentPredicate()
+
+        var descriptor = FetchDescriptor<Bookmark>(
+            predicate: predicate,
+            sortBy: [SortDescriptor(\Bookmark.createdAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = currentFetchLimit
+
+        bookmarks = (try? modelContext.fetch(descriptor)) ?? []
+
+        var countDescriptor = FetchDescriptor<Bookmark>(predicate: predicate)
+        countDescriptor.propertiesToFetch = []
+        totalFilteredCount = (try? modelContext.fetchCount(countDescriptor)) ?? 0
+
+        columnBookmarksCache = splitIntoColumns(bookmarks: bookmarks, columns: columnCount)
+        selectedBookmarkIDs = selectedBookmarkIDs.intersection(Set(bookmarks.map(\.id)))
+    }
+
+    private func currentPredicate() -> Predicate<Bookmark> {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch selection {
+        case .all:
+            if q.isEmpty {
+                return #Predicate<Bookmark> { _ in true }
+            }
+            return #Predicate<Bookmark> { bm in
+                bm.title.localizedStandardContains(q) ||
+                bm.url.localizedStandardContains(q) ||
+                bm.desc.localizedStandardContains(q) ||
+                bm.notes.localizedStandardContains(q)
+            }
+        case .category(let id):
+            if q.isEmpty {
+                return #Predicate<Bookmark> { bm in
+                    bm.category?.id == id
+                }
+            }
+            return #Predicate<Bookmark> { bm in
+                bm.category?.id == id &&
+                (bm.title.localizedStandardContains(q) ||
+                 bm.url.localizedStandardContains(q) ||
+                 bm.desc.localizedStandardContains(q) ||
+                 bm.notes.localizedStandardContains(q))
+            }
+        case .uncategorized:
+            if q.isEmpty {
+                return #Predicate<Bookmark> { bm in
+                    bm.category == nil
+                }
+            }
+            return #Predicate<Bookmark> { bm in
+                bm.category == nil &&
+                (bm.title.localizedStandardContains(q) ||
+                 bm.url.localizedStandardContains(q) ||
+                 bm.desc.localizedStandardContains(q) ||
+                 bm.notes.localizedStandardContains(q))
+            }
+        }
+    }
+
+    private func scheduleSearchRefresh() {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            currentFetchLimit = ContentView.pageSize
+            fetchBookmarks()
+        }
     }
 
     private func handleClickAction(for bookmark: Bookmark, isCmdClick: Bool) {
@@ -1042,15 +1100,6 @@ struct ContentView: View {
             await MainActor.run {
                 bm.updatedAt = Date()
             }
-        }
-    }
-
-    private func scheduleDerivedRefresh() {
-        refreshTask?.cancel()
-        refreshTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            guard !Task.isCancelled else { return }
-            refreshDerivedCollections()
         }
     }
 
@@ -2122,7 +2171,7 @@ private enum TwitterTweetExtractor {
 
 private struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
-    let bookmarks: [Bookmark]
+    @Environment(\.modelContext) private var modelContext
     let categories: [Category]
 
     @AppStorage("accentTheme") private var accentThemeName = "purple"
@@ -2333,7 +2382,7 @@ private struct SettingsView: View {
                 )
                 Task {
                     let result = await NotNowBackupService.export(
-                        bookmarks: bookmarks,
+                        bookmarks: (try? modelContext.fetch(FetchDescriptor<Bookmark>())) ?? [],
                         categories: categories,
                         config: config
                     )

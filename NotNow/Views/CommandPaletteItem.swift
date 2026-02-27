@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SwiftUI
 
@@ -50,8 +51,7 @@ struct CommandPaletteItem: Identifiable, Hashable {
     
     /// 图标名称
     var icon: String {
-        if bookmark.isFavorite { return "heart.fill" }
-        if bookmark.isRead { return "checkmark.circle" }
+        if bookmark.isFavorite { return "star.fill" }
         return "bookmark"
     }
     
@@ -74,18 +74,37 @@ class CommandPaletteManager: ObservableObject {
     @Published var selectedIndex = 0
     @Published var selectedCategoryFilter: CategoryFilter = .all
     @Published var categoryFilters: [CategoryFilter] = [.all]
+    @Published private(set) var filteredItems: [CommandPaletteItem] = []
     
     private var bookmarks: [Bookmark] = []
     private var categories: [Category] = []
+    private var cancellables = Set<AnyCancellable>()
     
     /// 空搜索时显示的最新书签数量
     private let recentLimit = 15
+    
+    nonisolated init() {
+        // Debounce setup must be deferred to MainActor
+        Task { @MainActor [weak self] in
+            self?.setupDebounce()
+        }
+    }
+    
+    private func setupDebounce() {
+        Publishers.CombineLatest($searchText, $selectedCategoryFilter)
+            .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
+            .sink { [weak self] _, _ in
+                self?.refreshFilteredItems()
+            }
+            .store(in: &cancellables)
+    }
     
     /// 初始化并设置数据源
     func configure(bookmarks: [Bookmark], categories: [Category]) {
         self.bookmarks = bookmarks
         self.categories = categories
         updateCategoryFilters()
+        refreshFilteredItems()
     }
     
     /// 更新分类过滤器列表
@@ -147,34 +166,29 @@ class CommandPaletteManager: ObservableObject {
         selectedIndex = 0 // 重置选中项
     }
     
-    /// 过滤后的条目
-    var filteredItems: [CommandPaletteItem] {
-        // 先按分类过滤
+    /// 刷新过滤后的条目
+    private func refreshFilteredItems() {
         let categoryFiltered = bookmarks.filter { selectedCategoryFilter.matches(bookmark: $0) }
-        
-        // 按创建时间倒序排列
         let sortedBookmarks = categoryFiltered.sorted { $0.createdAt > $1.createdAt }
         
         if searchText.isEmpty {
-            // 没有输入时只显示最近的 n 条
-            return sortedBookmarks.prefix(recentLimit).map { CommandPaletteItem(bookmark: $0) }
+            filteredItems = sortedBookmarks.prefix(recentLimit).map { CommandPaletteItem(bookmark: $0) }
+            return
         }
         
-        // 有输入时过滤
         let query = searchText.lowercased()
         let filtered = sortedBookmarks.filter { bm in
-            let titleMatch = bm.title.lowercased().contains(query)
-            let urlMatch = bm.url.lowercased().contains(query)
-            let descMatch = bm.desc.lowercased().contains(query)
-            let notesMatch = bm.notes.lowercased().contains(query)
-            let domainMatch = bm.domain.lowercased().contains(query)
-            let tagMatch = bm.tags.contains { $0.lowercased().contains(query) }
-            let categoryMatch = bm.category?.name.lowercased().contains(query) ?? false
-            
-            return titleMatch || urlMatch || descMatch || notesMatch || domainMatch || tagMatch || categoryMatch
+            bm.title.lowercased().contains(query)
+                || bm.url.lowercased().contains(query)
+                || bm.desc.lowercased().contains(query)
+                || bm.notes.lowercased().contains(query)
+                || bm.snippetText.lowercased().contains(query)
+                || bm.domain.lowercased().contains(query)
+                || bm.tags.contains { $0.lowercased().contains(query) }
+                || bm.category?.name.lowercased().contains(query) ?? false
         }
         
-        return filtered.map { CommandPaletteItem(bookmark: $0) }
+        filteredItems = filtered.map { CommandPaletteItem(bookmark: $0) }
     }
     
     /// 执行选中的条目
@@ -198,6 +212,7 @@ class CommandPaletteManager: ObservableObject {
         searchText = ""
         selectedIndex = 0
         selectedCategoryFilter = .all
+        refreshFilteredItems()
         isPresented = true
     }
     

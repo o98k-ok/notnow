@@ -48,4 +48,5 @@ extension Notification.Name {
     static let focusSearch = Notification.Name("focusSearch")
     static let showSettings = Notification.Name("showSettings")
     static let openCommandPalette = Notification.Name("openCommandPalette")
+    static let modelDataDidChange = Notification.Name("modelDataDidChange")
 }

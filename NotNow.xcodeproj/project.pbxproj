@@ -23,11 +23,13 @@
 		F2AA9FFA7C46FB04644CAE52 /* BookmarkCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B39BF9801D0262995AA7CE48 /* BookmarkCardView.swift */; };
 		1A2B3C4D5E6F7A8B9C0D1E2F /* CommandPaletteItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B3C4D5E6F7A8B9C0D1E2F3A /* CommandPaletteItem.swift */; };
 		2B3C4D5E6F7A8B9C0D1E2F3B /* CommandPaletteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C4D5E6F7A8B9C0D1E2F3A4B /* CommandPaletteView.swift */; };
+		E6206D9EC29B4D3C9B143B8C /* ActionbookCoverService.swift in Sources */ = {isa = PBXBuildFile; fileRef = e6206d9ec29b4d3c9b143b8c /* ActionbookCoverService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		0E5A2BD4FBD04CEC1CECE324 /* MetadataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataService.swift; sourceTree = "<group>"; };
 		19082D818158217648EDEC18 /* AddBookmarkSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddBookmarkSheet.swift; sourceTree = "<group>"; };
+		e6206d9ec29b4d3c9b143b8c /* ActionbookCoverService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionbookCoverService.swift; sourceTree = "<group>"; };
 		33DE51F64581E439A3271F37 /* NotNow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NotNow.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3D57C4911969A1DF7403C5D5 /* BookmarkDetailSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookmarkDetailSheet.swift; sourceTree = "<group>"; };
 		43EE9262209AB610ED8BAEB1 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -82,6 +84,7 @@
 		5064624F2667A9C89D7D553B /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				e6206d9ec29b4d3c9b143b8c /* ActionbookCoverService.swift */,
 				0E5A2BD4FBD04CEC1CECE324 /* MetadataService.swift */,
 				C8E3D4A5B6F7E2D1C0A9B8E7 /* NotNowBackupService.swift */,
 				691FF261CFE1DD8AFE42BD70 /* OpenService.swift */,
@@ -185,6 +188,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				587372AAF51FB9981BBDCD69 /* AddBookmarkSheet.swift in Sources */,
+				E6206D9EC29B4D3C9B143B8C /* ActionbookCoverService.swift in Sources */,
 				99EAC6973D2FBE20CC3DC0A2 /* Bookmark.swift in Sources */,
 				F2AA9FFA7C46FB04644CAE52 /* BookmarkCardView.swift in Sources */,
 				99CC69ECACD977CC5852A809 /* BookmarkDetailSheet.swift in Sources */,
