@@ -6,7 +6,7 @@ struct NotNowApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(AppTheme.colorScheme)
         }
         .modelContainer(for: [Bookmark.self, Category.self])
         .defaultSize(width: 1100, height: 750)

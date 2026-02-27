@@ -3,46 +3,52 @@ import SwiftUI
 // MARK: - Accent Theme (user-selectable)
 
 enum AccentTheme: String, CaseIterable, Identifiable {
-    case purple, cyan, pink, green, orange, blue, red, yellow
+    case dark, light, cli, christmas
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .purple: "极光紫"
-        case .cyan: "科技蓝"
-        case .pink: "霓虹粉"
-        case .green: "赛博绿"
-        case .orange: "烈焰橙"
-        case .blue: "深海蓝"
-        case .red: "烈焰红"
-        case .yellow: "琥珀黄"
+        case .dark: "深色模式"
+        case .light: "浅色模式"
+        case .cli: "终端主题"
+        case .christmas: "圣诞主题"
         }
     }
 
+    var icon: String {
+        switch self {
+        case .dark: "moon.fill"
+        case .light: "sun.max.fill"
+        case .cli: "terminal.fill"
+        case .christmas: "gift.fill"
+        }
+    }
+
+    var colorScheme: ColorScheme {
+        switch self {
+        case .light: .light
+        default: .dark
+        }
+    }
+
+    // MARK: Accent colors
+
     var color: Color {
         switch self {
-        case .purple: Color(hex: 0x6C5CE7)
-        case .cyan: Color(hex: 0x00D2FF)
-        case .pink: Color(hex: 0xF472B6)
-        case .green: Color(hex: 0x34D399)
-        case .orange: Color(hex: 0xF97316)
-        case .blue: Color(hex: 0x3B82F6)
-        case .red: Color(hex: 0xEF4444)
-        case .yellow: Color(hex: 0xFBBF24)
+        case .dark: Color(hex: 0x6C5CE7)
+        case .light: Color(hex: 0x6C5CE7)
+        case .cli: Color(hex: 0x10B981)
+        case .christmas: Color(hex: 0xDC2626)
         }
     }
 
     var secondary: Color {
         switch self {
-        case .purple: Color(hex: 0x00D2FF)
-        case .cyan: Color(hex: 0x6C5CE7)
-        case .pink: Color(hex: 0x6C5CE7)
-        case .green: Color(hex: 0x00D2FF)
-        case .orange: Color(hex: 0xFBBF24)
-        case .blue: Color(hex: 0x00D2FF)
-        case .red: Color(hex: 0xF97316)
-        case .yellow: Color(hex: 0xF97316)
+        case .dark: Color(hex: 0x00D2FF)
+        case .light: Color(hex: 0xF472B6)
+        case .cli: Color(hex: 0x4AF626)
+        case .christmas: Color(hex: 0x16A34A)
         }
     }
 
@@ -54,50 +60,97 @@ enum AccentTheme: String, CaseIterable, Identifiable {
         )
     }
 
-    /// Theme-tinted background (primary)
+    // MARK: Backgrounds
+
     var bgPrimary: Color {
         switch self {
-        case .purple: Color(hex: 0x11142A)
-        case .cyan: Color(hex: 0x0A1C2A)
-        case .pink: Color(hex: 0x231426)
-        case .green: Color(hex: 0x0D211A)
-        case .orange: Color(hex: 0x2A1A10)
-        case .blue: Color(hex: 0x0E1A34)
-        case .red: Color(hex: 0x261416)
-        case .yellow: Color(hex: 0x26200F)
+        case .dark: Color(hex: 0x11142A)
+        case .light: Color(hex: 0xF8F9FA)
+        case .cli: Color(hex: 0x000000)
+        case .christmas: Color(hex: 0x0D1B0F)
         }
     }
 
-    /// Theme-tinted background (secondary / sidebar)
     var bgSecondary: Color {
         switch self {
-        case .purple: Color(hex: 0x171C36)
-        case .cyan: Color(hex: 0x102636)
-        case .pink: Color(hex: 0x2A1B2E)
-        case .green: Color(hex: 0x143027)
-        case .orange: Color(hex: 0x352415)
-        case .blue: Color(hex: 0x162447)
-        case .red: Color(hex: 0x301B1D)
-        case .yellow: Color(hex: 0x322813)
+        case .dark: Color(hex: 0x171C36)
+        case .light: Color(hex: 0xFFFFFF)
+        case .cli: Color(hex: 0x0A0A0A)
+        case .christmas: Color(hex: 0x142016)
         }
     }
 
-    /// Theme-tinted card background
     var bgCard: Color {
         switch self {
-        case .purple: Color(hex: 0x1E2240)
-        case .cyan: Color(hex: 0x193040)
-        case .pink: Color(hex: 0x342239)
-        case .green: Color(hex: 0x1A3329)
-        case .orange: Color(hex: 0x3A2918)
-        case .blue: Color(hex: 0x1B2B4D)
-        case .red: Color(hex: 0x352224)
-        case .yellow: Color(hex: 0x372D17)
+        case .dark: Color(hex: 0x1E2240)
+        case .light: Color(hex: 0xFFFFFF)
+        case .cli: Color(hex: 0x1A1A1A)
+        case .christmas: Color(hex: 0x1A2A1E)
+        }
+    }
+
+    // MARK: Text
+
+    var textPrimary: Color {
+        switch self {
+        case .dark: .white
+        case .light: Color(hex: 0x1A1A1A)
+        case .cli: .white
+        case .christmas: .white
+        }
+    }
+
+    var textSecondary: Color {
+        switch self {
+        case .dark: Color.white.opacity(0.6)
+        case .light: Color(hex: 0x71717A)
+        case .cli: Color(hex: 0x4AF626)
+        case .christmas: Color(hex: 0xE5E7EB)
+        }
+    }
+
+    var textTertiary: Color {
+        switch self {
+        case .dark: Color.white.opacity(0.35)
+        case .light: Color(hex: 0xA1A1AA)
+        case .cli: Color(hex: 0x525252)
+        case .christmas: Color.white.opacity(0.35)
+        }
+    }
+
+    // MARK: Borders
+
+    var borderSubtle: Color {
+        switch self {
+        case .dark: Color.white.opacity(0.06)
+        case .light: Color.black.opacity(0.06)
+        case .cli: Color(hex: 0x333333)
+        case .christmas: Color(hex: 0xFDE68A).opacity(0.12)
+        }
+    }
+
+    var borderHover: Color {
+        switch self {
+        case .dark: Color.white.opacity(0.12)
+        case .light: Color.black.opacity(0.12)
+        case .cli: Color(hex: 0x4AF626).opacity(0.4)
+        case .christmas: Color(hex: 0xFDE68A).opacity(0.2)
+        }
+    }
+
+    // MARK: Preview color (for theme picker swatch)
+
+    var previewColor: Color {
+        switch self {
+        case .dark: Color(hex: 0x1E2240)
+        case .light: Color(hex: 0xF8F9FA)
+        case .cli: Color(hex: 0x000000)
+        case .christmas: Color(hex: 0x0D1B0F)
         }
     }
 
     static var current: AccentTheme {
-        AccentTheme(rawValue: UserDefaults.standard.string(forKey: "accentTheme") ?? "") ?? .purple
+        AccentTheme(rawValue: UserDefaults.standard.string(forKey: "accentTheme") ?? "") ?? .dark
     }
 }
 
@@ -117,15 +170,28 @@ enum AppTheme {
     static var bgInput: Color { AccentTheme.current.bgPrimary }
     static var backgroundGradient: LinearGradient {
         let t = AccentTheme.current
-        return LinearGradient(
-            colors: [
-                t.color.opacity(0.22),
-                t.secondary.opacity(0.15),
-                t.bgPrimary
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+        switch t {
+        case .light:
+            return LinearGradient(
+                colors: [
+                    t.color.opacity(0.08),
+                    t.secondary.opacity(0.05),
+                    t.bgPrimary,
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        default:
+            return LinearGradient(
+                colors: [
+                    t.color.opacity(0.22),
+                    t.secondary.opacity(0.15),
+                    t.bgPrimary,
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
     }
 
     // Fixed accent colors (non-theme)
@@ -133,14 +199,17 @@ enum AppTheme {
     static let accentPink = Color(hex: 0xF472B6)
     static let accentGreen = Color(hex: 0x34D399)
 
-    // Text
-    static let textPrimary = Color.white
-    static let textSecondary = Color.white.opacity(0.6)
-    static let textTertiary = Color.white.opacity(0.35)
+    // Dynamic text
+    static var textPrimary: Color { AccentTheme.current.textPrimary }
+    static var textSecondary: Color { AccentTheme.current.textSecondary }
+    static var textTertiary: Color { AccentTheme.current.textTertiary }
 
-    // Borders
-    static let borderSubtle = Color.white.opacity(0.06)
-    static let borderHover = Color.white.opacity(0.12)
+    // Dynamic borders
+    static var borderSubtle: Color { AccentTheme.current.borderSubtle }
+    static var borderHover: Color { AccentTheme.current.borderHover }
+
+    // Dynamic color scheme
+    static var colorScheme: ColorScheme { AccentTheme.current.colorScheme }
 
     static var coverOverlay: LinearGradient {
         LinearGradient(

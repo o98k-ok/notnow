@@ -356,7 +356,7 @@ struct BookmarkDetailSheet: View {
         }
         .sheet(isPresented: $showOpenWith) {
             OpenWithSheet(bookmark: bookmark)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(AppTheme.colorScheme)
         }
     }
 

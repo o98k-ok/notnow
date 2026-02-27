@@ -12,7 +12,7 @@ struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Category.sortOrder) private var categories: [Category]
 
-    @AppStorage("accentTheme") private var accentThemeName = "purple"
+    @AppStorage("accentTheme") private var accentThemeName = "dark"
     @State private var selection: SidebarSelection = .all
     /// 已生效的搜索词（用于查询）
     @State private var searchText = ""
@@ -52,7 +52,7 @@ struct ContentView: View {
     private let searchDebounceNanoseconds: UInt64 = 450_000_000
 
     private var currentTheme: AccentTheme {
-        AccentTheme(rawValue: accentThemeName) ?? .purple
+        AccentTheme(rawValue: accentThemeName) ?? .dark
     }
 
     var body: some View {
@@ -70,15 +70,15 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showAddSheet) {
             AddBookmarkSheet()
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(currentTheme.colorScheme)
         }
         .sheet(item: $selectedBookmark) { bm in
             BookmarkDetailSheet(bookmark: bm)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(currentTheme.colorScheme)
         }
         .sheet(isPresented: $showCategorySheet) {
             CategorySheet(editingCategory: editingCategory)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(currentTheme.colorScheme)
         }
         .sheet(isPresented: $showImportSheet) {
             ImportBookmarksSheet(
@@ -93,11 +93,11 @@ struct ContentView: View {
                     importBookmarks(from: source)
                 }
             )
-            .preferredColorScheme(.dark)
+            .preferredColorScheme(currentTheme.colorScheme)
         }
         .sheet(isPresented: $showSettings) {
             SettingsView(categories: categories)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(currentTheme.colorScheme)
         }
         .onReceive(NotificationCenter.default.publisher(for: .addBookmark)) { _ in
             showAddSheet = true
@@ -2277,7 +2277,7 @@ private struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     let categories: [Category]
 
-    @AppStorage("accentTheme") private var accentThemeName = "purple"
+    @AppStorage("accentTheme") private var accentThemeName = "dark"
 
     @AppStorage("ai.enabled") private var aiEnabled = false
     @AppStorage("ai.apiURL") private var aiAPIURL = ""
@@ -2310,7 +2310,7 @@ private struct SettingsView: View {
     }
 
     private var currentTheme: AccentTheme {
-        AccentTheme(rawValue: accentThemeName) ?? .purple
+        AccentTheme(rawValue: accentThemeName) ?? .dark
     }
 
     var body: some View {
@@ -2652,15 +2652,25 @@ private struct SettingsView: View {
                         accentThemeName = theme.rawValue
                     }
                 } label: {
-                    ZStack {
-                        Circle()
-                            .fill(theme.color)
-                            .frame(width: 20, height: 20)
-                        if currentTheme == theme {
-                            Circle()
-                                .stroke(.white, lineWidth: 2)
-                                .frame(width: 14, height: 14)
+                    VStack(spacing: 4) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(theme.previewColor)
+                                .frame(width: 32, height: 24)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(theme.gradient)
+                                        .frame(width: 16, height: 6)
+                                )
+                            if currentTheme == theme {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(theme.color, lineWidth: 2)
+                                    .frame(width: 32, height: 24)
+                            }
                         }
+                        Image(systemName: theme.icon)
+                            .font(.system(size: 9))
+                            .foregroundStyle(currentTheme == theme ? theme.color : AppTheme.textTertiary)
                     }
                     .shadow(
                         color: theme.color.opacity(currentTheme == theme ? 0.6 : 0),
