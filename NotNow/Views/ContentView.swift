@@ -49,6 +49,8 @@ struct ContentView: View {
     @State private var columnBookmarksCache: [[Bookmark]] = []
     @State private var isBatchRetagging = false
     @State private var batchRetagProgressText = ""
+    @State private var transientTip: String?
+    @State private var tipDismissTask: Task<Void, Never>?
     private let searchDebounceNanoseconds: UInt64 = 450_000_000
 
     private var currentTheme: AccentTheme {
@@ -56,7 +58,7 @@ struct ContentView: View {
     }
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             AppTheme.backgroundGradient
                 .ignoresSafeArea()
             HStack(spacing: 0) {
@@ -67,7 +69,20 @@ struct ContentView: View {
             
             // Command Palette
             CommandPaletteView()
+
+            if let tip = transientTip {
+                Text(tip)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.black.opacity(0.85))
+                    .clipShape(Capsule())
+                    .padding(.top, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
+        .animation(.easeOut(duration: 0.16), value: transientTip)
         .sheet(isPresented: $showAddSheet) {
             AddBookmarkSheet()
                 .preferredColorScheme(currentTheme.colorScheme)
@@ -649,7 +664,10 @@ struct ContentView: View {
                 }
             }
         } else {
-            Button(bm.isSnippet ? "复制内容" : "打开") { OpenService.open(bm) }
+            Button(bm.isSnippet ? "复制内容" : "打开") {
+                OpenService.open(bm)
+                showTip(bm.isSnippet ? "已复制" : "已打开")
+            }
             if !bm.isSnippet {
                 Button("在浏览器中打开") {
                     if let url = URL(string: bm.url) { NSWorkspace.shared.open(url) }
@@ -674,6 +692,7 @@ struct ContentView: View {
             Button("复制链接") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(bm.url, forType: .string)
+                showTip("链接已复制")
             }
         }
         Button("编辑") { selectedBookmark = bm }
@@ -951,8 +970,36 @@ struct ContentView: View {
 
     private func handleClickAction(for bookmark: Bookmark, isCmdClick: Bool) {
         let action = OpenService.resolveAction(for: bookmark, isCmdClick: isCmdClick)
-        if !OpenService.executeAction(action, bookmark: bookmark, isCmdClick: isCmdClick) {
+        if OpenService.executeAction(action, bookmark: bookmark, isCmdClick: isCmdClick) {
+            showTipText(for: action)
+        } else {
             selectedBookmark = bookmark
+        }
+    }
+
+    private func showTipText(for action: ClickAction) {
+        switch action {
+        case .copy:
+            showTip("已复制")
+        case .browser:
+            showTip("已打开")
+        case .script:
+            showTip("已执行脚本")
+        case .edit:
+            break
+        }
+    }
+
+    private func showTip(_ message: String) {
+        tipDismissTask?.cancel()
+        withAnimation {
+            transientTip = message
+        }
+        tipDismissTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            withAnimation {
+                transientTip = nil
+            }
         }
     }
 
