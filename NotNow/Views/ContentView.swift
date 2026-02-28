@@ -705,7 +705,6 @@ struct ContentView: View {
 
     private func bookmarkCell(for bookmark: Bookmark) -> some View {
         BookmarkCardView(bookmark: bookmark)
-            .clipped()
             .overlay(alignment: .topLeading) {
                 if isBatchMode {
                     batchCheckmark(for: bookmark.id)
@@ -2685,36 +2684,54 @@ private struct SettingsView: View {
     // MARK: - 外观
 
     private var appearanceSection: some View {
-        HStack(spacing: 8) {
+        let columns = [
+            GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 8),
+            GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 8),
+            GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 8)
+        ]
+        return LazyVGrid(columns: columns, spacing: 8) {
             ForEach(AccentTheme.allCases) { theme in
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         accentThemeName = theme.rawValue
                     }
                 } label: {
-                    VStack(spacing: 4) {
+                    VStack(spacing: 6) {
                         ZStack {
-                            RoundedRectangle(cornerRadius: 6)
+                            RoundedRectangle(cornerRadius: 8)
                                 .fill(theme.previewColor)
-                                .frame(width: 32, height: 24)
+                                .frame(height: 34)
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: 4)
+                                    RoundedRectangle(cornerRadius: 6)
                                         .fill(theme.gradient)
-                                        .frame(width: 16, height: 6)
+                                        .frame(height: 10)
+                                        .padding(.horizontal, 10)
                                 )
                             if currentTheme == theme {
-                                RoundedRectangle(cornerRadius: 6)
+                                RoundedRectangle(cornerRadius: 8)
                                     .stroke(theme.color, lineWidth: 2)
-                                    .frame(width: 32, height: 24)
                             }
                         }
-                        Image(systemName: theme.icon)
-                            .font(.system(size: 9))
-                            .foregroundStyle(currentTheme == theme ? theme.color : AppTheme.textTertiary)
+                        HStack(spacing: 4) {
+                            Image(systemName: theme.icon)
+                                .font(.system(size: 10))
+                            Text(theme.label)
+                                .font(.caption2.weight(.medium))
+                        }
+                        .foregroundStyle(currentTheme == theme ? theme.color : AppTheme.textSecondary)
+                        .lineLimit(1)
                     }
-                    .shadow(
-                        color: theme.color.opacity(currentTheme == theme ? 0.6 : 0),
-                        radius: 4
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 6)
+                    .frame(maxWidth: .infinity)
+                    .background(AppTheme.bgElevated.opacity(currentTheme == theme ? 0.9 : 0.55))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(
+                                currentTheme == theme ? theme.color.opacity(0.55) : AppTheme.borderSubtle,
+                                lineWidth: 1
+                            )
                     )
                 }
                 .buttonStyle(.plain)

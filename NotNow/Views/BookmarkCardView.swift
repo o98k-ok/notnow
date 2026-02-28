@@ -81,19 +81,27 @@ struct BookmarkCardView: View {
     @State private var relativeCreatedAtText = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if bookmark.isTask {
-                taskCard
-            } else if bookmark.isSnippet {
-                snippetCard
-            } else if bookmark.hasCover {
-                coverCard
-            } else {
-                compactCard
+        decoratedCard {
+            ZStack(alignment: .topTrailing) {
+                VStack(alignment: .leading, spacing: 0) {
+                    if bookmark.isTask {
+                        taskCard
+                    } else if bookmark.isSnippet {
+                        snippetCard
+                    } else if bookmark.hasCover {
+                        coverCard
+                    } else {
+                        compactCard
+                    }
+                }
+                if isBentoStyle {
+                    bentoTopDots
+                        .padding(.top, 9)
+                        .padding(.trailing, 9)
+                }
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-        .glassCard(isHovered: false)
         .onAppear {
             refreshRelativeCreatedAtText()
             guard bookmark.hasCover, displayCover == nil else { return }
@@ -102,6 +110,14 @@ struct BookmarkCardView: View {
         .onChange(of: bookmark.coverData) {
             Task { await loadCoverIfNeeded() }
         }
+    }
+
+    private var isBentoStyle: Bool { AppTheme.isBento }
+    private var isBentoLightStyle: Bool { AccentTheme.current == .bentoLight }
+    private var bentoPatternStyle: Int {
+        if bookmark.isTask { return 0 }
+        if bookmark.isSnippet { return 1 }
+        return abs(bookmark.id.hashValue) % 2 == 0 ? 2 : 3
     }
 
     private func loadCoverIfNeeded() async {
@@ -129,6 +145,119 @@ struct BookmarkCardView: View {
                 displayCover = nil
             }
         }
+    }
+
+    @ViewBuilder
+    private func decoratedCard<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        if isBentoStyle {
+            let cardShape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+            content()
+                .background(
+                    cardShape
+                        .fill(AppTheme.bgCard)
+                        .overlay(
+                            cardShape
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            AppTheme.accent.opacity(0.16),
+                                            AppTheme.secondary.opacity(0.08),
+                                            Color.clear
+                                        ],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                        )
+                )
+                .clipShape(cardShape)
+                .overlay(
+                    cardShape
+                        .stroke(AppTheme.borderSubtle, lineWidth: isBentoLightStyle ? 1.15 : 1)
+                )
+                .overlay(
+                    cardShape
+                        .stroke(
+                            AppTheme.borderHover.opacity(isBentoLightStyle ? 0.24 : 0.38),
+                            lineWidth: isBentoLightStyle ? 0.65 : 0.8
+                        )
+                        .padding(1.2)
+                )
+        } else {
+            content()
+                .glassCard(isHovered: false)
+        }
+    }
+
+    private var bentoTopDots: some View {
+        HStack(spacing: 3) {
+            Circle().fill(AppTheme.textTertiary).frame(width: 3.5, height: 3.5)
+            Circle().fill(AppTheme.textTertiary).frame(width: 3.5, height: 3.5)
+            Circle().fill(AppTheme.textTertiary).frame(width: 3.5, height: 3.5)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(AppTheme.bgPrimary.opacity(0.35))
+        .clipShape(Capsule())
+    }
+
+    private func bentoPatternStrip(style: Int) -> some View {
+        let ink = isBentoLightStyle ? Color.black.opacity(0.34) : Color.black.opacity(0.46)
+        return HStack(spacing: 8) {
+            switch style {
+            case 0:
+                Capsule().fill(ink).frame(width: 24, height: 4)
+                Circle().fill(ink).frame(width: 5, height: 5)
+                RoundedRectangle(cornerRadius: 2).fill(ink).frame(width: 14, height: 4)
+                Capsule().fill(ink.opacity(0.9)).frame(width: 10, height: 3)
+                RoundedRectangle(cornerRadius: 2).fill(ink).frame(width: 14, height: 4)
+                Circle().fill(ink).frame(width: 5, height: 5)
+                Capsule().fill(ink).frame(width: 24, height: 4)
+            case 1:
+                let widths: [CGFloat] = [20, 14, 8]
+                ForEach(Array(widths.enumerated()), id: \.offset) { _, width in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(ink)
+                        .frame(width: width, height: 4)
+                }
+                Circle().fill(ink.opacity(0.9)).frame(width: 6, height: 6)
+                ForEach(Array(widths.reversed().enumerated()), id: \.offset) { _, width in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(ink)
+                        .frame(width: width, height: 4)
+                }
+            case 2:
+                let heights: [CGFloat] = [6, 10, 14]
+                Capsule().fill(ink).frame(width: 18, height: 3)
+                ForEach(Array(heights.enumerated()), id: \.offset) { _, height in
+                    Capsule()
+                        .fill(ink.opacity(0.8))
+                        .frame(width: 3, height: height)
+                }
+                RoundedRectangle(cornerRadius: 2).fill(ink.opacity(0.95)).frame(width: 16, height: 4)
+                ForEach(Array(heights.reversed().enumerated()), id: \.offset) { _, height in
+                    Capsule()
+                        .fill(ink.opacity(0.8))
+                        .frame(width: 3, height: height)
+                }
+                Capsule().fill(ink).frame(width: 18, height: 3)
+            default:
+                RoundedRectangle(cornerRadius: 2).fill(ink).frame(width: 20, height: 3)
+                ForEach(0..<3, id: \.self) { _ in
+                    Circle().fill(ink).frame(width: 6, height: 6)
+                }
+                Capsule().fill(ink.opacity(0.9)).frame(width: 12, height: 3)
+                ForEach(0..<3, id: \.self) { _ in
+                    Circle().fill(ink).frame(width: 6, height: 6)
+                }
+                RoundedRectangle(cornerRadius: 2).fill(ink).frame(width: 20, height: 3)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .background(AppTheme.accentGradient)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     // MARK: - Task Card
@@ -254,6 +383,9 @@ struct BookmarkCardView: View {
                         .font(.system(size: 10))
                         .foregroundStyle(AppTheme.textTertiary)
                 }
+                if isBentoStyle {
+                    bentoPatternStrip(style: 0)
+                }
             }
             .padding(14)
         }
@@ -374,11 +506,15 @@ struct BookmarkCardView: View {
                 // Site icon placeholder
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(AppTheme.accent.opacity(0.15))
+                        .fill(
+                            isBentoStyle
+                                ? AnyShapeStyle(AppTheme.accentGradient)
+                                : AnyShapeStyle(AppTheme.accent.opacity(0.15))
+                        )
                         .frame(width: 36, height: 36)
                     Text(String(bookmark.domain.prefix(1)).uppercased())
                         .font(.subheadline.weight(.bold))
-                        .foregroundStyle(AppTheme.accent)
+                        .foregroundStyle(isBentoStyle ? Color.black.opacity(0.8) : AppTheme.accent)
                 }
 
                 VStack(alignment: .leading, spacing: 3) {
@@ -421,6 +557,9 @@ struct BookmarkCardView: View {
 
     private var tagsAndMeta: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if isBentoStyle {
+                bentoPatternStrip(style: bentoPatternStyle)
+            }
             if !bookmark.tags.isEmpty {
                 HStack(spacing: 4) {
                     ForEach(Array(bookmark.tags.prefix(3)), id: \.self) { tag in

@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Accent Theme (user-selectable)
 
 enum AccentTheme: String, CaseIterable, Identifiable {
-    case dark, light, cli, christmas
+    case dark, light, cli, christmas, bentoDark, bentoLight
 
     var id: String { rawValue }
 
@@ -13,6 +13,8 @@ enum AccentTheme: String, CaseIterable, Identifiable {
         case .light: "浅色模式"
         case .cli: "终端主题"
         case .christmas: "圣诞主题"
+        case .bentoDark: "便当暗色"
+        case .bentoLight: "便当亮色"
         }
     }
 
@@ -22,12 +24,14 @@ enum AccentTheme: String, CaseIterable, Identifiable {
         case .light: "sun.max.fill"
         case .cli: "terminal.fill"
         case .christmas: "gift.fill"
+        case .bentoDark: "square.grid.2x2.fill"
+        case .bentoLight: "square.grid.2x2"
         }
     }
 
     var colorScheme: ColorScheme {
         switch self {
-        case .light: .light
+        case .light, .bentoLight: .light
         default: .dark
         }
     }
@@ -40,6 +44,8 @@ enum AccentTheme: String, CaseIterable, Identifiable {
         case .light: Color(hex: 0x6C5CE7)
         case .cli: Color(hex: 0x10B981)
         case .christmas: Color(hex: 0xDC2626)
+        case .bentoDark: Color(hex: 0x22FF7A)
+        case .bentoLight: Color(hex: 0x00C853)
         }
     }
 
@@ -49,6 +55,8 @@ enum AccentTheme: String, CaseIterable, Identifiable {
         case .light: Color(hex: 0xF472B6)
         case .cli: Color(hex: 0x4AF626)
         case .christmas: Color(hex: 0x16A34A)
+        case .bentoDark: Color(hex: 0xFF6A00)
+        case .bentoLight: Color(hex: 0xFFC400)
         }
     }
 
@@ -68,6 +76,8 @@ enum AccentTheme: String, CaseIterable, Identifiable {
         case .light: Color(hex: 0xF8F9FA)
         case .cli: Color(hex: 0x000000)
         case .christmas: Color(hex: 0x0D1B0F)
+        case .bentoDark: Color(hex: 0x090B0F)
+        case .bentoLight: Color(hex: 0xF1F0EB)
         }
     }
 
@@ -77,6 +87,8 @@ enum AccentTheme: String, CaseIterable, Identifiable {
         case .light: Color(hex: 0xFFFFFF)
         case .cli: Color(hex: 0x0A0A0A)
         case .christmas: Color(hex: 0x142016)
+        case .bentoDark: Color(hex: 0x0E1117)
+        case .bentoLight: Color(hex: 0xFBFAF6)
         }
     }
 
@@ -86,6 +98,8 @@ enum AccentTheme: String, CaseIterable, Identifiable {
         case .light: Color(hex: 0xFFFFFF)
         case .cli: Color(hex: 0x1A1A1A)
         case .christmas: Color(hex: 0x1A2A1E)
+        case .bentoDark: Color(hex: 0x101318)
+        case .bentoLight: Color(hex: 0xFCFBF7)
         }
     }
 
@@ -97,6 +111,8 @@ enum AccentTheme: String, CaseIterable, Identifiable {
         case .light: Color(hex: 0x1A1A1A)
         case .cli: .white
         case .christmas: .white
+        case .bentoDark: Color(hex: 0xF6F7F9)
+        case .bentoLight: Color(hex: 0x15171A)
         }
     }
 
@@ -106,6 +122,8 @@ enum AccentTheme: String, CaseIterable, Identifiable {
         case .light: Color(hex: 0x71717A)
         case .cli: Color(hex: 0x4AF626)
         case .christmas: Color(hex: 0xE5E7EB)
+        case .bentoDark: Color.white.opacity(0.68)
+        case .bentoLight: Color(hex: 0x4B5563)
         }
     }
 
@@ -115,6 +133,8 @@ enum AccentTheme: String, CaseIterable, Identifiable {
         case .light: Color(hex: 0xA1A1AA)
         case .cli: Color(hex: 0x525252)
         case .christmas: Color.white.opacity(0.35)
+        case .bentoDark: Color.white.opacity(0.42)
+        case .bentoLight: Color(hex: 0x94A3B8)
         }
     }
 
@@ -126,6 +146,8 @@ enum AccentTheme: String, CaseIterable, Identifiable {
         case .light: Color.black.opacity(0.06)
         case .cli: Color(hex: 0x333333)
         case .christmas: Color(hex: 0xFDE68A).opacity(0.12)
+        case .bentoDark: Color.white.opacity(0.08)
+        case .bentoLight: Color.black.opacity(0.11)
         }
     }
 
@@ -135,6 +157,8 @@ enum AccentTheme: String, CaseIterable, Identifiable {
         case .light: Color.black.opacity(0.12)
         case .cli: Color(hex: 0x4AF626).opacity(0.4)
         case .christmas: Color(hex: 0xFDE68A).opacity(0.2)
+        case .bentoDark: Color(hex: 0x22FF7A).opacity(0.35)
+        case .bentoLight: Color(hex: 0x00C853).opacity(0.3)
         }
     }
 
@@ -146,11 +170,22 @@ enum AccentTheme: String, CaseIterable, Identifiable {
         case .light: Color(hex: 0xF8F9FA)
         case .cli: Color(hex: 0x000000)
         case .christmas: Color(hex: 0x0D1B0F)
+        case .bentoDark: Color(hex: 0x101318)
+        case .bentoLight: Color(hex: 0xF1F0EB)
         }
     }
 
     static var current: AccentTheme {
         AccentTheme(rawValue: UserDefaults.standard.string(forKey: "accentTheme") ?? "") ?? .dark
+    }
+
+    var isBento: Bool {
+        switch self {
+        case .bentoDark, .bentoLight:
+            return true
+        default:
+            return false
+        }
     }
 }
 
@@ -159,6 +194,7 @@ enum AccentTheme: String, CaseIterable, Identifiable {
 enum AppTheme {
     // Dynamic accent (reads user preference)
     static var accent: Color { AccentTheme.current.color }
+    static var secondary: Color { AccentTheme.current.secondary }
     static var accentGradient: LinearGradient { AccentTheme.current.gradient }
     static var glowAccent: Color { AccentTheme.current.color.opacity(0.4) }
 
@@ -176,6 +212,27 @@ enum AppTheme {
                 colors: [
                     t.color.opacity(0.08),
                     t.secondary.opacity(0.05),
+                    t.bgPrimary,
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .bentoLight:
+            return LinearGradient(
+                colors: [
+                    Color(hex: 0xEDEDED),
+                    t.secondary.opacity(0.08),
+                    Color(hex: 0xFFFFFF),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .bentoDark:
+            return LinearGradient(
+                colors: [
+                    Color(hex: 0x06080C),
+                    t.color.opacity(0.16),
+                    t.secondary.opacity(0.1),
                     t.bgPrimary,
                 ],
                 startPoint: .topLeading,
@@ -210,6 +267,7 @@ enum AppTheme {
 
     // Dynamic color scheme
     static var colorScheme: ColorScheme { AccentTheme.current.colorScheme }
+    static var isBento: Bool { AccentTheme.current.isBento }
 
     static var coverOverlay: LinearGradient {
         LinearGradient(
