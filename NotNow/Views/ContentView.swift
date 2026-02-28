@@ -1000,6 +1000,20 @@ struct ContentView: View {
         return host.contains("x.com") || host.contains("twitter.com")
     }
 
+    private func urlDedupKey(_ rawURL: String) -> String {
+        rawURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func bookmarkExistsInStore(for normalizedURL: String, dedupKey: String) -> Bool {
+        var descriptor = FetchDescriptor<Bookmark>(
+            predicate: #Predicate<Bookmark> { bm in
+                bm.url == normalizedURL || bm.url == dedupKey
+            }
+        )
+        descriptor.fetchLimit = 1
+        return ((try? modelContext.fetchCount(descriptor)) ?? 0) > 0
+    }
+
     private func normalizedTags(_ tags: [String]) -> [String] {
         var seen = Set<String>()
         return tags
@@ -1305,7 +1319,7 @@ struct ContentView: View {
             }()
 
             await MainActor.run {
-                var existingURLs = Set(bookmarks.map { $0.url.lowercased() })
+                var knownExistingURLKeys = Set<String>()
                 var importedCount = 0
                 var skippedCount = 0
                 var stoppedAtExisting = false
@@ -1322,8 +1336,11 @@ struct ContentView: View {
                         skippedCount += 1
                         continue
                     }
-                    let key = normalized.lowercased()
-                    if existingURLs.contains(key) {
+                    let key = urlDedupKey(normalized)
+                    if knownExistingURLKeys.contains(key)
+                        || bookmarkExistsInStore(for: normalized, dedupKey: key)
+                    {
+                        knownExistingURLKeys.insert(key)
                         if stopOnFirstExisting {
                             stoppedAtExisting = true
                             break
@@ -1335,7 +1352,7 @@ struct ContentView: View {
                     let bm = Bookmark(url: normalized, title: entry.title)
                     bm.category = selectedCategory
                     modelContext.insert(bm)
-                    existingURLs.insert(key)
+                    knownExistingURLKeys.insert(key)
                     importedCount += 1
                     importedItems.append(bm)
                 }
