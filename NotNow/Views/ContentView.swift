@@ -907,65 +907,58 @@ struct ContentView: View {
     }
 
     private func fetchBookmarks() {
-        let predicate = currentPredicate()
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scopePredicate = currentScopePredicate()
 
-        var descriptor = FetchDescriptor<Bookmark>(
-            predicate: predicate,
-            sortBy: [SortDescriptor(\Bookmark.createdAt, order: .reverse)]
-        )
-        descriptor.fetchLimit = currentFetchLimit
+        if q.isEmpty {
+            var descriptor = FetchDescriptor<Bookmark>(
+                predicate: scopePredicate,
+                sortBy: [SortDescriptor(\Bookmark.createdAt, order: .reverse)]
+            )
+            descriptor.fetchLimit = currentFetchLimit
+            bookmarks = (try? modelContext.fetch(descriptor)) ?? []
 
-        bookmarks = (try? modelContext.fetch(descriptor)) ?? []
-
-        var countDescriptor = FetchDescriptor<Bookmark>(predicate: predicate)
-        countDescriptor.propertiesToFetch = []
-        totalFilteredCount = (try? modelContext.fetchCount(countDescriptor)) ?? 0
+            var countDescriptor = FetchDescriptor<Bookmark>(predicate: scopePredicate)
+            countDescriptor.propertiesToFetch = []
+            totalFilteredCount = (try? modelContext.fetchCount(countDescriptor)) ?? 0
+        } else {
+            let descriptor = FetchDescriptor<Bookmark>(
+                predicate: scopePredicate,
+                sortBy: [SortDescriptor(\Bookmark.createdAt, order: .reverse)]
+            )
+            let scopedBookmarks = (try? modelContext.fetch(descriptor)) ?? []
+            let filtered = scopedBookmarks.filter { bookmarkMatchesSearch($0, query: q) }
+            totalFilteredCount = filtered.count
+            bookmarks = Array(filtered.prefix(currentFetchLimit))
+        }
 
         columnBookmarksCache = splitIntoColumns(bookmarks: bookmarks, columns: columnCount)
         selectedBookmarkIDs = selectedBookmarkIDs.intersection(Set(bookmarks.map(\.id)))
     }
 
-    private func currentPredicate() -> Predicate<Bookmark> {
-        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-
+    private func currentScopePredicate() -> Predicate<Bookmark> {
         switch selection {
         case .all:
-            if q.isEmpty {
-                return #Predicate<Bookmark> { _ in true }
-            }
-            return #Predicate<Bookmark> { bm in
-                bm.title.localizedStandardContains(q) ||
-                bm.url.localizedStandardContains(q) ||
-                bm.desc.localizedStandardContains(q) ||
-                bm.notes.localizedStandardContains(q)
-            }
+            return #Predicate<Bookmark> { _ in true }
         case .category(let id):
-            if q.isEmpty {
-                return #Predicate<Bookmark> { bm in
-                    bm.category?.id == id
-                }
-            }
             return #Predicate<Bookmark> { bm in
-                bm.category?.id == id &&
-                (bm.title.localizedStandardContains(q) ||
-                 bm.url.localizedStandardContains(q) ||
-                 bm.desc.localizedStandardContains(q) ||
-                 bm.notes.localizedStandardContains(q))
+                bm.category?.id == id
             }
         case .uncategorized:
-            if q.isEmpty {
-                return #Predicate<Bookmark> { bm in
-                    bm.category == nil
-                }
-            }
             return #Predicate<Bookmark> { bm in
-                bm.category == nil &&
-                (bm.title.localizedStandardContains(q) ||
-                 bm.url.localizedStandardContains(q) ||
-                 bm.desc.localizedStandardContains(q) ||
-                 bm.notes.localizedStandardContains(q))
+                bm.category == nil
             }
         }
+    }
+
+    private func bookmarkMatchesSearch(_ bm: Bookmark, query: String) -> Bool {
+        if bm.url.localizedStandardContains(query) { return true }
+        if bm.title.localizedStandardContains(query) { return true }
+        if bm.desc.localizedStandardContains(query) { return true }
+        if bm.snippetText.localizedStandardContains(query) { return true }
+        if bm.notes.localizedStandardContains(query) { return true }
+        if bm.tags.contains(where: { $0.localizedStandardContains(query) }) { return true }
+        return false
     }
 
     private func handleClickAction(for bookmark: Bookmark, isCmdClick: Bool) {

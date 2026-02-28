@@ -1,3 +1,5 @@
+import AppKit
+import Foundation
 import SwiftData
 import SwiftUI
 
@@ -6,11 +8,10 @@ struct CommandPaletteView: View {
     @Query(sort: \Bookmark.createdAt, order: .reverse) private var bookmarks: [Bookmark]
     @Query(sort: \Category.sortOrder) private var categories: [Category]
     
-    @FocusState private var isSearchFocused: Bool
-    @State private var searchDraftText = ""
-    @State private var searchDebounceTask: Task<Void, Never>?
+    @State private var searchFocusRequest = 0
     @State private var keyboardMonitor: Any?
-    private let searchDebounceNanoseconds: UInt64 = 250_000_000
+    @State private var openPaletteObserver: NSObjectProtocol?
+    private let searchDebounceNanoseconds: UInt64 = 150_000_000
     
     var body: some View {
         ZStack {
@@ -29,7 +30,14 @@ struct CommandPaletteView: View {
             }
         }
         .animation(.easeInOut(duration: 0.15), value: manager.isPresented)
-        .onAppear { setupNotifications() }
+        .onAppear {
+            setupNotifications()
+            manager.configure(bookmarks: bookmarks, categories: categories)
+        }
+        .onDisappear {
+            removeKeyboardMonitor()
+            removeNotifications()
+        }
         .onChange(of: bookmarks) { _, newBookmarks in
             manager.configure(bookmarks: newBookmarks, categories: categories)
         }
@@ -38,9 +46,6 @@ struct CommandPaletteView: View {
         }
         .onChange(of: manager.isPresented) { _, isPresented in
             handlePresentationChange(isPresented: isPresented)
-        }
-        .onChange(of: searchDraftText) {
-            scheduleSearchCommit()
         }
     }
     
@@ -72,23 +77,12 @@ struct CommandPaletteView: View {
                 .font(.title3)
                 .foregroundStyle(AppTheme.textTertiary)
             
-            TextField("搜索书签...", text: $searchDraftText)
-                .font(.title3.weight(.medium))
-                .foregroundStyle(AppTheme.textPrimary)
-                .focused($isSearchFocused)
-                .textFieldStyle(.plain)
-                .onSubmit { manager.executeSelected() }
-            
-            if !searchDraftText.isEmpty {
-                Button {
-                    searchDraftText = ""
-                    commitSearchImmediately()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title3)
-                        .foregroundStyle(AppTheme.textTertiary)
-                }
-                .buttonStyle(.plain)
+            CommandPaletteSearchField(
+                text: $manager.searchText,
+                focusRequest: searchFocusRequest,
+                debounceNanoseconds: searchDebounceNanoseconds
+            ) {
+                manager.executeSelected()
             }
             
             Text("↵")
@@ -176,7 +170,8 @@ struct CommandPaletteView: View {
                     sectionHeader(items: items)
                     
                     // Bookmark items
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    ForEach(items.indices, id: \.self) { index in
+                        let item = items[index]
                         bookmarkRow(item: item, index: index)
                             .id(item.id)
                             .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
@@ -218,13 +213,14 @@ struct CommandPaletteView: View {
             HStack(spacing: 12) {
                 // Icon
                 ZStack {
+                    let categoryColor = manager.categoryColor(for: item)
                     Circle()
-                        .fill(index == manager.selectedIndex ? AppTheme.accent.opacity(0.25) : (item.color?.opacity(0.15) ?? AppTheme.bgSecondary))
+                        .fill(index == manager.selectedIndex ? AppTheme.accent.opacity(0.25) : (categoryColor?.opacity(0.15) ?? AppTheme.bgSecondary))
                         .frame(width: 36, height: 36)
                     
                     Image(systemName: item.icon)
                         .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(index == manager.selectedIndex ? AppTheme.accent : (item.color ?? AppTheme.textSecondary))
+                        .foregroundStyle(index == manager.selectedIndex ? AppTheme.accent : (categoryColor ?? AppTheme.textSecondary))
                 }
                 
                 // Title and subtitle
@@ -247,7 +243,7 @@ struct CommandPaletteView: View {
                             
                             Text(categoryName)
                                 .font(.caption)
-                                .foregroundStyle(item.color ?? AppTheme.textSecondary)
+                                .foregroundStyle(manager.categoryColor(for: item) ?? AppTheme.textSecondary)
                                 .lineLimit(1)
                         }
                     }
@@ -293,15 +289,9 @@ struct CommandPaletteView: View {
     
     private func handlePresentationChange(isPresented: Bool) {
         if isPresented {
-            manager.configure(bookmarks: bookmarks, categories: categories)
-            searchDraftText = manager.searchText
+            searchFocusRequest += 1
             setupKeyboardMonitor()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                isSearchFocused = true
-            }
         } else {
-            searchDebounceTask?.cancel()
-            searchDebounceTask = nil
             removeKeyboardMonitor()
         }
     }
@@ -315,10 +305,9 @@ struct CommandPaletteView: View {
     }
     
     private func setupNotifications() {
-        NotificationCenter.default.addObserver(
-            forName: .openCommandPalette,
-            object: nil,
-            queue: .main
+        guard openPaletteObserver == nil else { return }
+        openPaletteObserver = NotificationCenter.default.addObserver(
+            forName: .openCommandPalette, object: nil, queue: .main
         ) { _ in
             Task { @MainActor in
                 manager.open()
@@ -326,25 +315,13 @@ struct CommandPaletteView: View {
         }
     }
 
-    private func scheduleSearchCommit() {
-        searchDebounceTask?.cancel()
-        searchDebounceTask = Task { @MainActor in
-            let pending = searchDraftText.trimmingCharacters(in: .whitespacesAndNewlines)
-            try? await Task.sleep(nanoseconds: searchDebounceNanoseconds)
-            guard !Task.isCancelled else { return }
-            guard pending != manager.searchText else { return }
-            manager.searchText = pending
+    private func removeNotifications() {
+        if let observer = openPaletteObserver {
+            NotificationCenter.default.removeObserver(observer)
+            openPaletteObserver = nil
         }
     }
 
-    private func commitSearchImmediately() {
-        searchDebounceTask?.cancel()
-        searchDebounceTask = nil
-        let pending = searchDraftText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard pending != manager.searchText else { return }
-        manager.searchText = pending
-    }
-    
     // MARK: - Keyboard Handling
     
     private func setupKeyboardMonitor() {
@@ -352,6 +329,11 @@ struct CommandPaletteView: View {
         
         keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard self.manager.isPresented else { return event }
+            if let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
+               textView.hasMarkedText()
+            {
+                return event
+            }
             
             switch event.keyCode {
             case 53: // Esc
@@ -384,6 +366,79 @@ struct CommandPaletteView: View {
             NSEvent.removeMonitor(monitor)
             keyboardMonitor = nil
         }
+    }
+}
+
+private struct CommandPaletteSearchField: View {
+    @Binding var text: String
+    let focusRequest: Int
+    let debounceNanoseconds: UInt64
+    let onSubmit: () -> Void
+
+    @State private var draftText = ""
+    @State private var debounceTask: Task<Void, Never>?
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        Group {
+            TextField("搜索书签...", text: $draftText)
+                .font(.title3.weight(.medium))
+                .foregroundStyle(AppTheme.textPrimary)
+                .focused($isFocused)
+                .textFieldStyle(.plain)
+                .onSubmit { onSubmit() }
+            if !draftText.isEmpty {
+                Button {
+                    draftText = ""
+                    commitImmediately()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(AppTheme.textTertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .onAppear {
+            draftText = text
+        }
+        .onChange(of: focusRequest) {
+            isFocused = true
+            if draftText != text {
+                draftText = text
+            }
+        }
+        .onChange(of: text) { _, newValue in
+            if newValue != draftText {
+                draftText = newValue
+            }
+        }
+        .onChange(of: draftText) {
+            scheduleCommit()
+        }
+        .onDisappear {
+            debounceTask?.cancel()
+            debounceTask = nil
+        }
+    }
+
+    private func scheduleCommit() {
+        debounceTask?.cancel()
+        debounceTask = Task { @MainActor in
+            let pending = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+            try? await Task.sleep(nanoseconds: debounceNanoseconds)
+            guard !Task.isCancelled else { return }
+            guard pending != text else { return }
+            text = pending
+        }
+    }
+
+    private func commitImmediately() {
+        debounceTask?.cancel()
+        debounceTask = nil
+        let pending = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard pending != text else { return }
+        text = pending
     }
 }
 
