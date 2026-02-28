@@ -290,6 +290,20 @@ struct AITitleDescription {
     let tags: [String]?
 }
 
+struct AIRecommendationCandidate {
+    let url: String
+    let title: String
+    let desc: String
+    let notes: String
+    let tags: [String]
+    let snippet: String
+}
+
+struct AIRecommendationResult {
+    let summary: String?
+    let selectedURLs: [String]
+}
+
 struct AIConfig {
     let apiURL: URL
     let apiKey: String
@@ -615,6 +629,147 @@ actor AIService {
         }
     }
 
+    func recommendBookmarks(
+        query: String,
+        candidates: [AIRecommendationCandidate],
+        maxResults: Int
+    ) async -> AIRecommendationResult? {
+        guard let cfg = AIConfig.load() else { return nil }
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty, !candidates.isEmpty, maxResults > 0 else { return nil }
+
+        struct PromptCandidate: Encodable {
+            let url: String
+            let title: String
+            let desc: String
+            let notes: String
+            let tags: [String]
+            let snippet: String
+        }
+
+        struct ChatRequest: Encodable {
+            struct Message: Encodable {
+                let role: String
+                let content: String
+            }
+            let model: String
+            let messages: [Message]
+            let temperature: Double
+        }
+
+        func trim(_ text: String, max: Int) -> String {
+            let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.count <= max { return cleaned }
+            return String(cleaned.prefix(max))
+        }
+
+        let promptCandidates = candidates.prefix(180).map {
+            PromptCandidate(
+                url: trim($0.url, max: 220),
+                title: trim($0.title, max: 120),
+                desc: trim($0.desc, max: 180),
+                notes: trim($0.notes, max: 180),
+                tags: Array($0.tags.prefix(8)).map { trim($0, max: 24) },
+                snippet: trim($0.snippet, max: 180)
+            )
+        }
+
+        guard let candidatesJSON = try? String(
+            data: JSONEncoder().encode(promptCandidates),
+            encoding: .utf8
+        ) else {
+            return nil
+        }
+
+        let systemPrompt = """
+        你是一个书签助手。请根据用户的自然语言意图，从候选书签中挑出最有价值的结果。
+        规则：
+        1) 只能从候选里选择，不能编造 URL。
+        2) 返回数量不超过 max_results。
+        3) 优先语义相关性、信息密度、可执行价值；避免重复主题。
+        4) 只输出 JSON，不要额外文字，格式：
+        {
+          "summary": "一句中文摘要（可选）",
+          "selected_urls": ["https://...", "..."]
+        }
+        """
+
+        let userPrompt = """
+        query: \(trimmedQuery)
+        max_results: \(maxResults)
+        candidates_json: \(candidatesJSON)
+        """
+
+        let body = ChatRequest(
+            model: cfg.model,
+            messages: [
+                .init(role: "system", content: systemPrompt),
+                .init(role: "user", content: userPrompt)
+            ],
+            temperature: 0.2
+        )
+
+        guard let payload = try? JSONEncoder().encode(body) else { return nil }
+
+        var request = URLRequest(url: cfg.apiURL, timeoutInterval: 20)
+        request.httpMethod = "POST"
+        request.httpBody = payload
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !cfg.apiKey.isEmpty {
+            request.setValue("Bearer \(cfg.apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200 ... 299).contains(status) else { return nil }
+
+            struct ChatResponse: Decodable {
+                struct Choice: Decodable {
+                    struct Message: Decodable { let content: String }
+                    let message: Message
+                }
+                let choices: [Choice]
+            }
+            guard
+                let decoded = try? JSONDecoder().decode(ChatResponse.self, from: data),
+                let content = decoded.choices.first?.message.content
+            else {
+                return nil
+            }
+
+            struct Parsed: Decodable {
+                let summary: String?
+                let selected_urls: [String]?
+            }
+            guard
+                let jsonData = content.data(using: .utf8),
+                let parsed = try? JSONDecoder().decode(Parsed.self, from: jsonData),
+                let urls = parsed.selected_urls
+            else {
+                return nil
+            }
+
+            var seen = Set<String>()
+            let deduped = urls
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .filter { url in
+                    let key = url.lowercased()
+                    if seen.contains(key) { return false }
+                    seen.insert(key)
+                    return true
+                }
+
+            return AIRecommendationResult(
+                summary: parsed.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+                selectedURLs: Array(deduped.prefix(maxResults))
+            )
+        } catch {
+            return nil
+        }
+    }
+
     /// 根据页面结构分析最佳 OG 封面区域，返回 CSS 选择器
     func analyzeCoverRegion(pageStructure: String, url: String) async -> String? {
         guard let cfg = AIConfig.load() else {
@@ -715,4 +870,3 @@ actor AIService {
         }
     }
 }
-

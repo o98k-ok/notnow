@@ -4,6 +4,7 @@ import SwiftUI
 
 enum SidebarSelection: Hashable {
     case all
+    case recommend
     case category(UUID)
     case uncategorized
 }
@@ -13,7 +14,7 @@ struct ContentView: View {
     @Query(sort: \Category.sortOrder) private var categories: [Category]
 
     @AppStorage("accentTheme") private var accentThemeName = "dark"
-    @State private var selection: SidebarSelection = .all
+    @State private var selection: SidebarSelection = .recommend
     /// 已生效的搜索词（用于查询）
     @State private var searchText = ""
     @State private var showAddSheet = false
@@ -51,7 +52,17 @@ struct ContentView: View {
     @State private var batchRetagProgressText = ""
     @State private var transientTip: String?
     @State private var tipDismissTask: Task<Void, Never>?
+    @State private var recommendationQuery = "推荐我现在最值得看的内容"
+    @State private var recommendationSummary = ""
+    @State private var recommendedBookmarks: [Bookmark] = []
+    @State private var isRecommending = false
+    @State private var recommendationTask: Task<Void, Never>?
+    @State private var recommendationFocusRequest = 0
+    @State private var didRunInitialRecommendation = false
+    @State private var recommendationCycle = 0
     private let searchDebounceNanoseconds: UInt64 = 450_000_000
+    private static let recommendationCandidateMax = 320
+    private static let recommendationWindowMax = 640
 
     private var currentTheme: AccentTheme {
         AccentTheme(rawValue: accentThemeName) ?? .dark
@@ -133,7 +144,18 @@ struct ContentView: View {
         }
         .onChange(of: selection) {
             currentFetchLimit = ContentView.pageSize
-            fetchBookmarks()
+            if selection == .recommend {
+                if recommendationQuery.isEmpty {
+                    recommendationQuery = "推荐我现在最值得看的内容"
+                }
+                recommendationFocusRequest += 1
+                if !didRunInitialRecommendation {
+                    didRunInitialRecommendation = true
+                    refreshRecommendations()
+                }
+            } else {
+                fetchBookmarks()
+            }
         }
         .onChange(of: columnCount) {
             columnBookmarksCache = splitIntoColumns(bookmarks: bookmarks, columns: columnCount)
@@ -146,6 +168,10 @@ struct ContentView: View {
         }
         .onChange(of: showImportSheet) {
             if !showImportSheet { refreshAll() }
+        }
+        .onDisappear {
+            recommendationTask?.cancel()
+            recommendationTask = nil
         }
         .alert("导入结果", isPresented: $showImportAlert) {
             Button("好的", role: .cancel) {}
@@ -181,6 +207,13 @@ struct ContentView: View {
                 count: allBookmarkCount,
                 accentColor: currentTheme.color
             ) { selection = .all }
+
+            sidebarItem(
+                label: "推荐", icon: "sparkles",
+                isActive: selection == .recommend,
+                count: selection == .recommend ? recommendedBookmarks.count : nil,
+                accentColor: currentTheme.color
+            ) { selection = .recommend }
 
             // Categories header
             HStack {
@@ -308,8 +341,13 @@ struct ContentView: View {
 
     private var mainContent: some View {
         VStack(spacing: 0) {
-            topBar
-            bookmarkGrid
+            if selection == .recommend {
+                recommendationTopBar
+                recommendationGrid
+            } else {
+                topBar
+                bookmarkGrid
+            }
         }
         .background(AppTheme.bgPrimary)
     }
@@ -489,9 +527,124 @@ struct ContentView: View {
         .padding(.vertical, 16)
     }
 
+    private var recommendationTopBar: some View {
+        VStack(spacing: 14) {
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: 92, height: 92)
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                )
+
+            VStack(alignment: .leading, spacing: 12) {
+                PromptEditor(
+                    text: $recommendationQuery,
+                    focusRequest: recommendationFocusRequest,
+                    placeholder: "例如：推荐 github 里高质量、可直接上手的 Swift 项目"
+                )
+
+                HStack(spacing: 10) {
+                    Label("自然语言推荐", systemImage: "sparkles")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textTertiary)
+                    Spacer()
+                    Button {
+                        didRunInitialRecommendation = true
+                        refreshRecommendations()
+                    } label: {
+                        HStack(spacing: 6) {
+                            if isRecommending {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.trianglehead.clockwise")
+                            }
+                            Text("刷新推荐")
+                        }
+                        .ghostButtonStyle()
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isRecommending)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: 760)
+            .background(AppTheme.bgInput)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
+            )
+
+            if !recommendationSummary.isEmpty {
+                Text(recommendationSummary)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: 760, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 24)
+        .padding(.top, 28)
+        .padding(.bottom, 18)
+    }
+
+    private var recommendationGrid: some View {
+        let columns = [
+            GridItem(.flexible(minimum: 220, maximum: 360), spacing: 14, alignment: .top),
+            GridItem(.flexible(minimum: 220, maximum: 360), spacing: 14, alignment: .top),
+            GridItem(.flexible(minimum: 220, maximum: 360), spacing: 14, alignment: .top),
+            GridItem(.flexible(minimum: 220, maximum: 360), spacing: 14, alignment: .top),
+        ]
+        return GeometryReader { _ in
+            ScrollView {
+                if recommendedBookmarks.isEmpty {
+                    recommendationEmptyState
+                } else {
+                    let display = Array(recommendedBookmarks.prefix(recommendationDisplayLimit))
+
+                    VStack {
+                        LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                            ForEach(display, id: \.id) { bm in
+                                bookmarkCell(for: bm)
+                            }
+                        }
+                        .frame(maxWidth: 1460, alignment: .topLeading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 8)
+                }
+            }
+            .scrollIndicators(.visible)
+        }
+    }
+
+    private var recommendationEmptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: isRecommending ? "hourglass" : "sparkles")
+                .font(.title2)
+                .foregroundStyle(AppTheme.textTertiary)
+            Text(isRecommending ? "正在分析你的数据..." : "输入你的需求，AI 会推荐最有价值的卡片")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.textSecondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 260)
+        .padding(.horizontal, 24)
+    }
+
+    private var recommendationDisplayLimit: Int {
+        8
+    }
+
     private var topBarTitle: String {
         switch selection {
         case .all: "全部书签"
+        case .recommend: "智能推荐"
         case .category(let id): categories.first { $0.id == id }?.name ?? "分类"
         case .uncategorized: "未分类"
         }
@@ -850,9 +1003,7 @@ struct ContentView: View {
         guard !selected.isEmpty else { return }
 
         // 分类统计
-        let snippets = selected.filter { $0.isSnippet }
         let twitterLinks = selected.filter { isTwitterURL($0.url) && !$0.isSnippet }
-        let normalLinks = selected.filter { !isTwitterURL($0.url) && !$0.isSnippet }
 
         // 检查 Twitter 配置
         let canProcessTwitter = twitterLikesEnabled && !twitterLikesBinPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -887,7 +1038,14 @@ struct ContentView: View {
 
     private func refreshAll() {
         fetchSidebarCounts()
-        fetchBookmarks()
+        if selection == .recommend {
+            if !didRunInitialRecommendation {
+                didRunInitialRecommendation = true
+                refreshRecommendations()
+            }
+        } else {
+            fetchBookmarks()
+        }
     }
 
     private func fetchSidebarCounts() {
@@ -939,6 +1097,8 @@ struct ContentView: View {
         switch selection {
         case .all:
             return #Predicate<Bookmark> { _ in true }
+        case .recommend:
+            return #Predicate<Bookmark> { _ in true }
         case .category(let id):
             return #Predicate<Bookmark> { bm in
                 bm.category?.id == id
@@ -958,6 +1118,219 @@ struct ContentView: View {
         if bm.notes.localizedStandardContains(query) { return true }
         if bm.tags.contains(where: { $0.localizedStandardContains(query) }) { return true }
         return false
+    }
+
+    private func recommendationSeed(query: String, cycle: Int) -> Int {
+        let normalized = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        var hash = 2166136261
+        for scalar in normalized.unicodeScalars {
+            hash = (hash ^ Int(scalar.value)) &* 16777619
+        }
+        return (hash ^ (cycle &* 1315423911)) & 0x7fffffff
+    }
+
+    private func recommendationWindowLimit(totalCount: Int, seed: Int) -> Int {
+        guard totalCount > 0 else { return 0 }
+        let base = max(180, min(ContentView.recommendationWindowMax, totalCount / 3 + 120))
+        let jitter = seed % 120
+        return min(totalCount, min(ContentView.recommendationWindowMax, base + jitter))
+    }
+
+    private func recommendationCandidateLimit(windowCount: Int, seed: Int) -> Int {
+        guard windowCount > 0 else { return 0 }
+        let dynamic = 180 + (seed % 90)
+        return min(windowCount, min(ContentView.recommendationCandidateMax, dynamic))
+    }
+
+    private func recommendationSortDescriptors(seed: Int) -> [SortDescriptor<Bookmark>] {
+        switch seed % 4 {
+        case 0:
+            return [SortDescriptor(\Bookmark.updatedAt, order: .reverse)]
+        case 1:
+            return [SortDescriptor(\Bookmark.updatedAt, order: .forward)]
+        case 2:
+            return [SortDescriptor(\Bookmark.createdAt, order: .reverse)]
+        default:
+            return [SortDescriptor(\Bookmark.createdAt, order: .forward)]
+        }
+    }
+
+    private func complementaryRecommendationSortDescriptors(seed: Int) -> [SortDescriptor<Bookmark>] {
+        recommendationSortDescriptors(seed: seed + 2)
+    }
+
+    private func mergeUniqueBookmarks(_ first: [Bookmark], _ second: [Bookmark], limit: Int) -> [Bookmark] {
+        var merged: [Bookmark] = []
+        merged.reserveCapacity(min(limit, first.count + second.count))
+        var seen = Set<UUID>()
+
+        for bm in first where seen.insert(bm.id).inserted {
+            merged.append(bm)
+            if merged.count >= limit { return merged }
+        }
+        for bm in second where seen.insert(bm.id).inserted {
+            merged.append(bm)
+            if merged.count >= limit { return merged }
+        }
+        return merged
+    }
+
+    private func refreshRecommendations() {
+        recommendationTask?.cancel()
+        recommendationTask = nil
+
+        let query = recommendationQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        recommendationCycle += 1
+        let cycle = recommendationCycle
+        guard !query.isEmpty else {
+            isRecommending = false
+            recommendationSummary = ""
+            recommendedBookmarks = []
+            return
+        }
+
+        recommendationTask = Task(priority: .userInitiated) {
+            await MainActor.run {
+                isRecommending = true
+                recommendationSummary = ""
+            }
+
+            let totalCount = await MainActor.run {
+                (try? modelContext.fetchCount(FetchDescriptor<Bookmark>())) ?? 0
+            }
+            let seed = recommendationSeed(query: query, cycle: cycle)
+            let dynamicWindowLimit = recommendationWindowLimit(totalCount: totalCount, seed: seed)
+            guard dynamicWindowLimit > 0 else {
+                await MainActor.run {
+                    isRecommending = false
+                    recommendationSummary = "暂无可推荐的数据。"
+                    recommendedBookmarks = []
+                }
+                return
+            }
+
+            var primaryDescriptor = FetchDescriptor<Bookmark>(
+                sortBy: recommendationSortDescriptors(seed: seed)
+            )
+            primaryDescriptor.fetchLimit = dynamicWindowLimit
+            let primary = await MainActor.run { (try? modelContext.fetch(primaryDescriptor)) ?? [] }
+
+            guard !Task.isCancelled else { return }
+            guard !primary.isEmpty else {
+                await MainActor.run {
+                    isRecommending = false
+                    recommendationSummary = "暂无可推荐的数据。"
+                    recommendedBookmarks = []
+                }
+                return
+            }
+
+            let secondaryLimit = min(max(120, dynamicWindowLimit / 2), dynamicWindowLimit)
+            var secondaryDescriptor = FetchDescriptor<Bookmark>(
+                sortBy: complementaryRecommendationSortDescriptors(seed: seed)
+            )
+            secondaryDescriptor.fetchLimit = secondaryLimit
+            let secondary = await MainActor.run { (try? modelContext.fetch(secondaryDescriptor)) ?? [] }
+
+            let candidates = mergeUniqueBookmarks(primary, secondary, limit: ContentView.recommendationWindowMax)
+            let rankedCandidates = fallbackRecommendations(query: query, candidates: candidates)
+            let aiCandidateLimit = recommendationCandidateLimit(windowCount: rankedCandidates.count, seed: seed)
+            let limit = await MainActor.run { recommendationDisplayLimit }
+            let aiInput = Array(rankedCandidates.prefix(max(aiCandidateLimit, limit)))
+            let aiCandidates = aiInput.map { bm in
+                AIRecommendationCandidate(
+                    url: bm.url,
+                    title: bm.title,
+                    desc: bm.desc,
+                    notes: bm.notes,
+                    tags: bm.tags,
+                    snippet: bm.snippetText
+                )
+            }
+
+            let aiResult = await AIService.shared.recommendBookmarks(
+                query: query,
+                candidates: aiCandidates,
+                maxResults: limit
+            )
+
+            guard !Task.isCancelled else { return }
+
+            let urlToBookmark = Dictionary(grouping: aiInput, by: { urlDedupKey($0.url) })
+            var ordered: [Bookmark] = []
+            var selectedIDs = Set<UUID>()
+
+            if let aiResult {
+                for url in aiResult.selectedURLs {
+                    let key = urlDedupKey(url)
+                    guard let matched = urlToBookmark[key]?.first else { continue }
+                    if selectedIDs.insert(matched.id).inserted {
+                        ordered.append(matched)
+                    }
+                }
+            }
+
+            if ordered.count < limit {
+                for bm in rankedCandidates {
+                    guard selectedIDs.insert(bm.id).inserted else { continue }
+                    ordered.append(bm)
+                    if ordered.count >= limit { break }
+                }
+            }
+
+            let summary = aiResult?.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "基于你的查询和历史内容生成推荐。"
+            await MainActor.run {
+                recommendedBookmarks = Array(ordered.prefix(limit))
+                recommendationSummary = summary
+                isRecommending = false
+            }
+        }
+    }
+
+    private func fallbackRecommendations(query: String, candidates: [Bookmark]) -> [Bookmark] {
+        let cleanedQuery = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let tokens = cleanedQuery
+            .split { $0 == " " || $0 == "," || $0 == "，" || $0 == "。" || $0 == ";" || $0 == "；" }
+            .map(String.init)
+            .filter { !$0.isEmpty }
+
+        let now = Date()
+        return candidates.sorted { lhs, rhs in
+            recommendationScore(for: lhs, query: cleanedQuery, tokens: tokens, now: now)
+                > recommendationScore(for: rhs, query: cleanedQuery, tokens: tokens, now: now)
+        }
+    }
+
+    private func recommendationScore(for bm: Bookmark, query: String, tokens: [String], now: Date) -> Double {
+        let title = bm.title.lowercased()
+        let desc = bm.desc.lowercased()
+        let notes = bm.notes.lowercased()
+        let snippet = bm.snippetText.lowercased()
+        let url = bm.url.lowercased()
+        let tags = bm.tags.map { $0.lowercased() }
+
+        var score = 0.0
+        if !query.isEmpty {
+            if title.contains(query) { score += 8 }
+            if desc.contains(query) { score += 6 }
+            if notes.contains(query) { score += 4 }
+            if snippet.contains(query) { score += 4 }
+            if url.contains(query) { score += 3 }
+            if tags.contains(where: { $0.contains(query) }) { score += 7 }
+        }
+
+        for token in tokens where token.count >= 2 {
+            if title.contains(token) { score += 3 }
+            if desc.contains(token) { score += 2 }
+            if notes.contains(token) { score += 1.5 }
+            if snippet.contains(token) { score += 1.5 }
+            if tags.contains(where: { $0.contains(token) }) { score += 2.5 }
+        }
+
+        if bm.isFavorite { score += 1.8 }
+        let recencyDays = max(0, now.timeIntervalSince(bm.updatedAt) / 86_400)
+        score += max(0, 2.2 - min(recencyDays / 10, 2.2))
+        return score
     }
 
     private func handleClickAction(for bookmark: Bookmark, isCmdClick: Bool) {
@@ -1540,19 +1913,64 @@ struct ContentView: View {
     }
 }
 
+private struct PromptEditor: View {
+    @Binding var text: String
+    let focusRequest: Int
+    let placeholder: String
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            TextEditor(text: $text)
+                .font(.body)
+                .scrollContentBackground(.hidden)
+                .focused($isFocused)
+                .frame(minHeight: 86, maxHeight: 122)
+
+            if text.isEmpty {
+                Text(placeholder)
+                    .font(.body)
+                    .foregroundStyle(AppTheme.textTertiary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 8)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onChange(of: focusRequest) {
+            isFocused = true
+        }
+    }
+}
+
 private struct DebouncedSearchField: View {
     @Binding var text: String
     let focusRequest: Int
     let debounceNanoseconds: UInt64
+    let placeholder: String
     let onDebouncedCommit: () -> Void
 
     @State private var draftText = ""
     @State private var debounceTask: Task<Void, Never>?
     @FocusState private var isFocused: Bool
 
+    init(
+        text: Binding<String>,
+        focusRequest: Int,
+        debounceNanoseconds: UInt64,
+        placeholder: String = "搜索书签...",
+        onDebouncedCommit: @escaping () -> Void
+    ) {
+        _text = text
+        self.focusRequest = focusRequest
+        self.debounceNanoseconds = debounceNanoseconds
+        self.placeholder = placeholder
+        self.onDebouncedCommit = onDebouncedCommit
+    }
+
     var body: some View {
         Group {
-            TextField("搜索书签...", text: $draftText)
+            TextField(placeholder, text: $draftText)
                 .textFieldStyle(.plain)
                 .font(.subheadline)
                 .focused($isFocused)
