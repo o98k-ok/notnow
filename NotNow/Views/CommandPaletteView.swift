@@ -12,12 +12,13 @@ struct CommandPaletteView: View {
     @State private var keyboardMonitor: Any?
     @State private var openPaletteObserver: NSObjectProtocol?
     private let searchDebounceNanoseconds: UInt64 = 150_000_000
+    private let paletteCornerRadius: CGFloat = 14
     
     var body: some View {
         ZStack {
             // 背景遮罩
             if manager.isPresented {
-                Color.black.opacity(0.5)
+                (AppTheme.colorScheme == .dark ? Color.black.opacity(0.56) : Color.black.opacity(0.22))
                     .ignoresSafeArea()
                     .transition(.opacity)
                     .onTapGesture { manager.close() }
@@ -58,14 +59,17 @@ struct CommandPaletteView: View {
             resultsList
         }
         .frame(width: 600)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(AppTheme.bgElevated)
-                .shadow(color: Color.black.opacity(0.3), radius: 20, x: 0, y: 10)
-        )
+        .background(AppTheme.bgElevated)
+        .clipShape(RoundedRectangle(cornerRadius: paletteCornerRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: paletteCornerRadius, style: .continuous)
                 .stroke(AppTheme.borderHover, lineWidth: 1)
+        )
+        .shadow(
+            color: AppTheme.colorScheme == .dark ? Color.black.opacity(0.42) : Color.black.opacity(0.14),
+            radius: AppTheme.colorScheme == .dark ? 26 : 18,
+            x: 0,
+            y: AppTheme.colorScheme == .dark ? 12 : 8
         )
     }
     
@@ -181,6 +185,8 @@ struct CommandPaletteView: View {
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color.clear)
             .frame(height: min(CGFloat(manager.filteredItems.count) * 56 + 40, 400))
             .background(AppTheme.bgPrimary)
             .onChange(of: manager.selectedIndex) { _, newIndex in
