@@ -1,6 +1,7 @@
 import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
 
 struct AddBookmarkSheet: View {
     @Environment(\.modelContext) private var modelContext
@@ -27,6 +28,16 @@ struct AddBookmarkSheet: View {
     @State private var taskPriority: TaskPriority = .none
     @State private var taskDueDate: Date?
     @State private var showDueDatePicker = false
+    @State private var apiMethod: HTTPMethod = .GET
+    private struct APIKeyValueRow: Identifiable {
+        let id = UUID()
+        var key: String
+        var value: String
+    }
+    @State private var apiHeaderRows: [APIKeyValueRow] = [APIKeyValueRow(key: "", value: "")]
+    @State private var apiParamRows: [APIKeyValueRow] = [APIKeyValueRow(key: "", value: "")]
+    @State private var apiBody = ""
+    @State private var apiBodyType = "json"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,6 +54,7 @@ struct AddBookmarkSheet: View {
                             Text("链接").tag(BookmarkKind.link)
                             Text("片段").tag(BookmarkKind.snippet)
                             Text("任务").tag(BookmarkKind.task)
+                            Text("API").tag(BookmarkKind.api)
                         }
                         .pickerStyle(.segmented)
                     }
@@ -275,6 +287,187 @@ struct AddBookmarkSheet: View {
                         }
 
 
+                    }
+
+                    if kind == .api {
+                        // URL
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("请求地址")
+                            HStack(spacing: 8) {
+                                Picker("", selection: $apiMethod) {
+                                    ForEach(HTTPMethod.allCases, id: \.self) { m in
+                                        Text(m.rawValue).tag(m)
+                                    }
+                                }
+                                .frame(width: 90)
+
+                                TextField("https://api.example.com/v1/users", text: $url)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(.subheadline, design: .monospaced))
+                                    .darkTextField()
+                            }
+                        }
+
+                        // Query Params
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("Query 参数")
+                            ForEach(apiParamRows) { row in
+                                HStack(spacing: 6) {
+                                    TextField("Key", text: addBindingParamKey(row))
+                                        .textFieldStyle(.plain)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .darkTextField()
+
+                                    TextField("Value", text: addBindingParamValue(row))
+                                        .textFieldStyle(.plain)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .darkTextField()
+
+                                    Button {
+                                        apiParamRows.removeAll { $0.id == row.id }
+                                    } label: {
+                                        Image(systemName: "minus.circle")
+                                            .font(.caption)
+                                            .foregroundStyle(AppTheme.accentPink)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            Button {
+                                apiParamRows.append(APIKeyValueRow(key: "", value: ""))
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "plus.circle.fill")
+                                    Text("添加 Query 参数")
+                                        .font(.subheadline.weight(.medium))
+                                }
+                                .foregroundStyle(AppTheme.accent)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(AppTheme.accent.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        // Headers
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("Headers")
+                            ForEach(apiHeaderRows) { row in
+                                HStack(spacing: 6) {
+                                    TextField("Key", text: addBindingHeaderKey(row))
+                                        .textFieldStyle(.plain)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .darkTextField()
+
+                                    TextField("Value", text: addBindingHeaderValue(row))
+                                        .textFieldStyle(.plain)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .darkTextField()
+
+                                    Button {
+                                        apiHeaderRows.removeAll { $0.id == row.id }
+                                    } label: {
+                                        Image(systemName: "minus.circle")
+                                            .font(.caption)
+                                            .foregroundStyle(AppTheme.accentPink)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            Button {
+                                apiHeaderRows.append(APIKeyValueRow(key: "", value: ""))
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "plus.circle.fill")
+                                    Text("添加 Header")
+                                        .font(.subheadline.weight(.medium))
+                                }
+                                .foregroundStyle(AppTheme.accent)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(AppTheme.accent.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        // Body
+                        if apiMethod != .GET {
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    fieldLabel("Body")
+                                    Spacer()
+                                    Picker("", selection: $apiBodyType) {
+                                        Text("JSON").tag("json")
+                                        Text("Form").tag("form")
+                                        Text("Text").tag("text")
+                                        Text("None").tag("none")
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .frame(width: 240)
+                                    if apiBodyType == "json" {
+                                        Button {
+                                            formatAPIBodyAdd()
+                                        } label: {
+                                            HStack(spacing: 5) {
+                                                Image(systemName: "arrow.triangle.2.circlepath")
+                                                Text("Format JSON")
+                                                    .font(.subheadline.weight(.medium))
+                                            }
+                                            .foregroundStyle(AppTheme.accent)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 6)
+                                            .background(AppTheme.accent.opacity(0.15))
+                                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                                if apiBodyType != "none" {
+                                    PlainTextEditor(
+                                        text: $apiBody,
+                                        minHeight: 100,
+                                        font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+                                    )
+                                    .padding(10)
+                                    .frame(minHeight: 100)
+                                    .background(AppTheme.bgInput)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // API 类型：AI 打标
+                    if kind == .api && aiEnabled {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                fieldLabel("AI")
+                                Spacer()
+                                Button {
+                                    refineAPIMetadata()
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        if isFetching {
+                                            ProgressView().controlSize(.mini)
+                                        } else {
+                                            Image(systemName: "sparkles")
+                                                .font(.system(size: 11, weight: .medium))
+                                        }
+                                        Text("AI 打标")
+                                            .font(.system(size: 11, weight: .medium))
+                                    }
+                                    .foregroundStyle(AppTheme.accent)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isFetching)
+                            }
+                        }
                     }
 
                     // Category
@@ -599,6 +792,113 @@ struct AddBookmarkSheet: View {
         }
     }
 
+    private func refineAPIMetadata() {
+        guard kind == .api else { return }
+        let urlToUse = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !urlToUse.isEmpty else { return }
+        metadataTask?.cancel()
+        aiRefined = false
+        isFetching = true
+        metadataTask = Task {
+            let ai = await AIService.shared.refineAPI(
+                url: urlToUse,
+                method: apiMethod.rawValue,
+                bodySnippet: apiBody.isEmpty ? nil : apiBody,
+                originalTitle: title,
+                originalDesc: desc
+            )
+            if Task.isCancelled { return }
+            await MainActor.run {
+                if Task.isCancelled { return }
+                isFetching = false
+                guard let ai else { return }
+                var didChange = false
+                if let t = ai.title, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    title = t
+                    didChange = true
+                }
+                if let d = ai.desc, !d.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    desc = d
+                    didChange = true
+                }
+                if let tagList = ai.tags, !tagList.isEmpty {
+                    let newTags = tagList
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                    if !newTags.isEmpty {
+                        let existing = tagsText.split(separator: ",")
+                            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            .filter { !$0.isEmpty }
+                        var seen = Set<String>()
+                        let combined = (existing + newTags).filter { tag in
+                            let lower = tag.lowercased()
+                            if seen.contains(lower) { return false }
+                            seen.insert(lower)
+                            return true
+                        }
+                        tagsText = combined.joined(separator: ", ")
+                        didChange = true
+                    }
+                }
+                if didChange { aiRefined = true }
+            }
+        }
+    }
+
+    private func addBindingHeaderKey(_ row: APIKeyValueRow) -> Binding<String> {
+        Binding(
+            get: { apiHeaderRows.first(where: { $0.id == row.id })?.key ?? "" },
+            set: { newValue in
+                if let i = apiHeaderRows.firstIndex(where: { $0.id == row.id }) {
+                    apiHeaderRows[i].key = newValue
+                }
+            }
+        )
+    }
+
+    private func addBindingHeaderValue(_ row: APIKeyValueRow) -> Binding<String> {
+        Binding(
+            get: { apiHeaderRows.first(where: { $0.id == row.id })?.value ?? "" },
+            set: { newValue in
+                if let i = apiHeaderRows.firstIndex(where: { $0.id == row.id }) {
+                    apiHeaderRows[i].value = newValue
+                }
+            }
+        )
+    }
+
+    private func addBindingParamKey(_ row: APIKeyValueRow) -> Binding<String> {
+        Binding(
+            get: { apiParamRows.first(where: { $0.id == row.id })?.key ?? "" },
+            set: { newValue in
+                if let i = apiParamRows.firstIndex(where: { $0.id == row.id }) {
+                    apiParamRows[i].key = newValue
+                }
+            }
+        )
+    }
+
+    private func addBindingParamValue(_ row: APIKeyValueRow) -> Binding<String> {
+        Binding(
+            get: { apiParamRows.first(where: { $0.id == row.id })?.value ?? "" },
+            set: { newValue in
+                if let i = apiParamRows.firstIndex(where: { $0.id == row.id }) {
+                    apiParamRows[i].value = newValue
+                }
+            }
+        )
+    }
+
+    /// 格式化 Body：空则写入空 JSON 模板，否则按 JSON 美化
+    private func formatAPIBodyAdd() {
+        let trimmed = apiBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            apiBody = "{\n  \n}"
+        } else if let formatted = APIService.formatJSON(apiBody) {
+            apiBody = formatted
+        }
+    }
+
     private var saveButtonDisabled: Bool {
         switch kind {
         case .link:
@@ -607,6 +907,8 @@ struct AddBookmarkSheet: View {
             return snippetContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .task:
             return title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .api:
+            return url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 
@@ -637,6 +939,27 @@ struct AddBookmarkSheet: View {
         if kind == .task {
             bookmark.resolvedTaskPriority = taskPriority
             bookmark.dueDate = taskDueDate
+        }
+        if kind == .api {
+            bookmark.apiMethod = apiMethod.rawValue
+            bookmark.apiBodyType = apiBodyType
+            bookmark.apiBody = apiBody
+            let headers = apiHeaderRows.filter { !$0.key.isEmpty }
+            if !headers.isEmpty {
+                let arr = headers.map { ["key": $0.key, "value": $0.value, "enabled": true] as [String: Any] }
+                if let data = try? JSONSerialization.data(withJSONObject: arr),
+                   let str = String(data: data, encoding: .utf8) {
+                    bookmark.apiHeaders = str
+                }
+            }
+            let params = apiParamRows.filter { !$0.key.isEmpty }
+            if !params.isEmpty {
+                let arr = params.map { ["key": $0.key, "value": $0.value, "enabled": true] as [String: Any] }
+                if let data = try? JSONSerialization.data(withJSONObject: arr),
+                   let str = String(data: data, encoding: .utf8) {
+                    bookmark.apiQueryParams = str
+                }
+            }
         }
         bookmark.category = categories.first { $0.id == selectedCategoryID }
         modelContext.insert(bookmark)

@@ -6,6 +6,7 @@ enum BookmarkKind: String, CaseIterable, Codable {
     case link
     case snippet
     case task
+    case api
 }
 
 enum SnippetFormat: String, CaseIterable, Codable {
@@ -48,6 +49,20 @@ enum TaskPriority: Int, CaseIterable, Codable {
     }
 }
 
+enum HTTPMethod: String, CaseIterable, Codable {
+    case GET, POST, PUT, DELETE, PATCH
+
+    var color: Color {
+        switch self {
+        case .GET: .green
+        case .POST: Color(hex: 0x3B82F6)
+        case .PUT: .orange
+        case .DELETE: .red
+        case .PATCH: .purple
+        }
+    }
+}
+
 @Model
 final class Bookmark {
     @Attribute(.unique) var id: UUID
@@ -83,6 +98,11 @@ final class Bookmark {
     var dueDate: Date?
     /// Priority: 0=none, 1=low, 2=medium, 3=high
     var taskPriority: Int?
+    var apiMethod: String?
+    var apiHeaders: String?
+    var apiBody: String?
+    var apiBodyType: String?
+    var apiQueryParams: String?
 
     init(
         url: String,
@@ -132,6 +152,10 @@ final class Bookmark {
         bookmarkKind == .task
     }
 
+    var isAPI: Bool {
+        bookmarkKind == .api
+    }
+
     var resolvedSnippetFormat: SnippetFormat {
         get { SnippetFormat(rawValue: snippetFormat ?? "") ?? .plain }
         set { snippetFormat = newValue.rawValue }
@@ -153,6 +177,11 @@ final class Bookmark {
     var resolvedTaskPriority: TaskPriority {
         get { TaskPriority(rawValue: taskPriority ?? 0) ?? .none }
         set { taskPriority = newValue.rawValue }
+    }
+
+    var resolvedAPIMethod: HTTPMethod {
+        get { HTTPMethod(rawValue: apiMethod ?? "GET") ?? .GET }
+        set { apiMethod = newValue.rawValue }
     }
 
     var isOverdue: Bool {

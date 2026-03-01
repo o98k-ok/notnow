@@ -24,6 +24,16 @@ enum OpenService {
         if bookmark.isSnippet {
             return bookmark.snippetText.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        if bookmark.isAPI {
+            return APIService.generateCURL(
+                url: bookmark.url,
+                method: bookmark.apiMethod ?? "GET",
+                headers: bookmark.apiHeaders,
+                queryParams: bookmark.apiQueryParams,
+                body: bookmark.apiBody,
+                bodyType: bookmark.apiBodyType
+            )
+        }
         return bookmark.url
     }
 
@@ -36,6 +46,11 @@ enum OpenService {
 
         // Task type always opens edit dialog
         if bookmark.isTask {
+            return .edit
+        }
+
+        if bookmark.isAPI {
+            if isCmdClick { return .copy }
             return .edit
         }
 
@@ -122,6 +137,20 @@ enum OpenService {
             guard !bookmark.url.hasPrefix("task://"),
                   let url = URL(string: bookmark.url) else { return }
             NSWorkspace.shared.open(url)
+            return
+        }
+
+        if bookmark.isAPI {
+            let curl = APIService.generateCURL(
+                url: bookmark.url,
+                method: bookmark.apiMethod ?? "GET",
+                headers: bookmark.apiHeaders,
+                queryParams: bookmark.apiQueryParams,
+                body: bookmark.apiBody,
+                bodyType: bookmark.apiBodyType
+            )
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(curl, forType: .string)
             return
         }
 

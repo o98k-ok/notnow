@@ -84,7 +84,9 @@ struct BookmarkCardView: View {
         decoratedCard {
             ZStack(alignment: .topTrailing) {
                 VStack(alignment: .leading, spacing: 0) {
-                    if bookmark.isTask {
+                    if bookmark.isAPI {
+                        apiCard
+                    } else if bookmark.isTask {
                         taskCard
                     } else if bookmark.isSnippet {
                         snippetCard
@@ -115,6 +117,7 @@ struct BookmarkCardView: View {
     private var isBentoStyle: Bool { AppTheme.isBento }
     private var isBentoLightStyle: Bool { AccentTheme.current == .bentoLight }
     private var bentoPatternStyle: Int {
+        if bookmark.isAPI { return 2 }
         if bookmark.isTask { return 0 }
         if bookmark.isSnippet { return 1 }
         return abs(bookmark.id.hashValue) % 2 == 0 ? 2 : 3
@@ -258,6 +261,80 @@ struct BookmarkCardView: View {
         .frame(maxWidth: .infinity, alignment: .center)
         .background(AppTheme.accentGradient)
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    // MARK: - API Card
+
+    private var apiCard: some View {
+        let method = bookmark.resolvedAPIMethod
+        let urlText = bookmark.url
+        let bodyPreview: String = {
+            guard let body = bookmark.apiBody?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !body.isEmpty else { return "" }
+            return String(body.prefix(200))
+        }()
+
+        return VStack(alignment: .leading, spacing: 0) {
+            // Method + URL header
+            HStack(spacing: 8) {
+                Text(method.rawValue)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(method.color)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+
+                Text(urlText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 14)
+            .padding(.bottom, 8)
+
+            // Body preview
+            if !bodyPreview.isEmpty {
+                Text(bodyPreview)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .lineLimit(6)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(AppTheme.bgInput)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .padding(.horizontal, 14)
+            }
+
+            // Title + info
+            VStack(alignment: .leading, spacing: 8) {
+                if !bookmark.title.isEmpty {
+                    Text(bookmark.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .lineLimit(2)
+                }
+
+                HStack(spacing: 4) {
+                    tagPill("api")
+                    if let bodyType = bookmark.apiBodyType, !bodyType.isEmpty {
+                        tagPill(bodyType)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(height: 18)
+
+                tagsAndMeta
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 8)
+            .padding(.bottom, 14)
+        }
     }
 
     // MARK: - Task Card

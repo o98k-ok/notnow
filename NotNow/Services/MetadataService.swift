@@ -509,6 +509,129 @@ actor AIService {
         }
     }
 
+    /// 根据 API 请求 URL / 方法 / Body 片段生成标题、描述和标签（用于 API 类型书签的 AI 打标）
+    func refineAPI(
+        url: String,
+        method: String,
+        bodySnippet: String?,
+        originalTitle: String,
+        originalDesc: String
+    ) async -> AITitleDescription? {
+        var logLines: [String] = []
+        logLines.append("AI API refine started")
+        logLines.append("url = \(url)")
+        logLines.append("method = \(method)")
+
+        guard let cfg = AIConfig.load() else {
+            logLines.append("config = missing or disabled")
+            storeLog(logLines.joined(separator: "\n"))
+            return nil
+        }
+
+        struct ChatRequest: Encodable {
+            struct Message: Encodable {
+                let role: String
+                let content: String
+            }
+            let model: String
+            let messages: [Message]
+            let temperature: Double
+        }
+
+        let systemPrompt =
+            """
+            你是一个为稍后阅读应用生成中文标题、简介和标签的助手。
+            用户保存了一个 API 请求（METHOD + URL，可选 Body），请根据请求用途生成标题、描述和标签。
+            请只输出一个 JSON 对象，不要输出多余文字，格式为：
+            {
+              "title": "字符串，简洁的 API 用途标题",
+              "description": "字符串，摘要描述，不超过 80 个中文字符",
+              "tags": ["tag1", "tag2", ...]  // 可选，0~5 个短标签，如 API、REST、认证 等
+            }
+            tags 应是简短的中文或英文关键词，不要包含空字符串或重复项。
+            """
+
+        var userContent = "API 请求：\(method) \(url)\n\n当前标题：\(originalTitle)\n当前描述：\(originalDesc)"
+        if let body = bodySnippet?.trimmingCharacters(in: .whitespacesAndNewlines), !body.isEmpty {
+            let snippet = String(body.prefix(800))
+            userContent = "API 请求：\(method) \(url)\n\nBody 片段：\n\(snippet)\n\n当前标题：\(originalTitle)\n当前描述：\(originalDesc)"
+        }
+
+        let body = ChatRequest(
+            model: cfg.model,
+            messages: [
+                .init(role: "system", content: systemPrompt),
+                .init(role: "user", content: userContent),
+            ],
+            temperature: 0.3
+        )
+
+        guard let payload = try? JSONEncoder().encode(body) else {
+            logLines.append("error = encode request failed")
+            storeLog(logLines.joined(separator: "\n"))
+            return nil
+        }
+
+        var request = URLRequest(url: cfg.apiURL, timeoutInterval: 20)
+        request.httpMethod = "POST"
+        request.httpBody = payload
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !cfg.apiKey.isEmpty {
+            request.setValue("Bearer \(cfg.apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            logLines.append("status = \(status)")
+            guard (200 ... 299).contains(status) else {
+                logLines.append("error = non-2xx status")
+                storeLog(logLines.joined(separator: "\n"))
+                return nil
+            }
+
+            struct ChatResponse: Decodable {
+                struct Choice: Decodable {
+                    struct Message: Decodable {
+                        let role: String
+                        let content: String
+                    }
+                    let message: Message
+                }
+                let choices: [Choice]
+            }
+
+            guard let decoded = try? JSONDecoder().decode(ChatResponse.self, from: data),
+                  let content = decoded.choices.first?.message.content
+            else {
+                logLines.append("error = decode chat response failed")
+                storeLog(logLines.joined(separator: "\n"))
+                return nil
+            }
+
+            struct Parsed: Decodable {
+                let title: String?
+                let description: String?
+                let tags: [String]?
+            }
+
+            guard let jsonData = content.data(using: .utf8),
+                  let parsed = try? JSONDecoder().decode(Parsed.self, from: jsonData)
+            else {
+                logLines.append("error = message is not valid JSON")
+                storeLog(logLines.joined(separator: "\n"))
+                return nil
+            }
+
+            storeLog(logLines.joined(separator: "\n"))
+            return AITitleDescription(title: parsed.title, desc: parsed.description, tags: parsed.tags)
+        } catch {
+            logLines.append("error = \(error.localizedDescription)")
+            storeLog(logLines.joined(separator: "\n"))
+            return nil
+        }
+    }
+
     func refineSnippet(
         content: String,
         originalTitle: String, originalDesc: String

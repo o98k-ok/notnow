@@ -24,12 +24,15 @@
 		1A2B3C4D5E6F7A8B9C0D1E2F /* CommandPaletteItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B3C4D5E6F7A8B9C0D1E2F3A /* CommandPaletteItem.swift */; };
 		2B3C4D5E6F7A8B9C0D1E2F3B /* CommandPaletteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C4D5E6F7A8B9C0D1E2F3A4B /* CommandPaletteView.swift */; };
 		E6206D9EC29B4D3C9B143B8C /* ActionbookCoverService.swift in Sources */ = {isa = PBXBuildFile; fileRef = e6206d9ec29b4d3c9b143b8c /* ActionbookCoverService.swift */; };
+		A1B2C3D4E5F6071829A3B4C5D6 /* APIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F6071829A3B4C5D6E7 /* APIService.swift */; };
+		D5E6F7A8B9C0D1E2F3A4B5C6D /* PlainTextEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4D5E6F7A8B9C0D1E2F3A4B5C /* PlainTextEditor.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		0E5A2BD4FBD04CEC1CECE324 /* MetadataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataService.swift; sourceTree = "<group>"; };
 		19082D818158217648EDEC18 /* AddBookmarkSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddBookmarkSheet.swift; sourceTree = "<group>"; };
 		e6206d9ec29b4d3c9b143b8c /* ActionbookCoverService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionbookCoverService.swift; sourceTree = "<group>"; };
+		B2C3D4E5F6071829A3B4C5D6E7 /* APIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIService.swift; sourceTree = "<group>"; };
 		33DE51F64581E439A3271F37 /* NotNow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NotNow.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3D57C4911969A1DF7403C5D5 /* BookmarkDetailSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookmarkDetailSheet.swift; sourceTree = "<group>"; };
 		43EE9262209AB610ED8BAEB1 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -46,6 +49,7 @@
 		B39BF9801D0262995AA7CE48 /* BookmarkCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookmarkCardView.swift; sourceTree = "<group>"; };
 		2B3C4D5E6F7A8B9C0D1E2F3A /* CommandPaletteItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPaletteItem.swift; sourceTree = "<group>"; };
 		3C4D5E6F7A8B9C0D1E2F3A4B /* CommandPaletteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPaletteView.swift; sourceTree = "<group>"; };
+		C4D5E6F7A8B9C0D1E2F3A4B5C /* PlainTextEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlainTextEditor.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -58,6 +62,7 @@
 				6B0B8A3537F299D8B7651CA2 /* CategorySheet.swift */,
 				43EE9262209AB610ED8BAEB1 /* ContentView.swift */,
 				50BB4E5B583BA233D7010F66 /* OpenWithSheet.swift */,
+				C4D5E6F7A8B9C0D1E2F3A4B5C /* PlainTextEditor.swift */,
 				A9E43F5C0C52A2E19ADAA632 /* Theme.swift */,
 				2B3C4D5E6F7A8B9C0D1E2F3A /* CommandPaletteItem.swift */,
 				3C4D5E6F7A8B9C0D1E2F3A4B /* CommandPaletteView.swift */,
@@ -85,6 +90,7 @@
 			isa = PBXGroup;
 			children = (
 				e6206d9ec29b4d3c9b143b8c /* ActionbookCoverService.swift */,
+				B2C3D4E5F6071829A3B4C5D6E7 /* APIService.swift */,
 				0E5A2BD4FBD04CEC1CECE324 /* MetadataService.swift */,
 				C8E3D4A5B6F7E2D1C0A9B8E7 /* NotNowBackupService.swift */,
 				691FF261CFE1DD8AFE42BD70 /* OpenService.swift */,
@@ -189,6 +195,8 @@
 			files = (
 				587372AAF51FB9981BBDCD69 /* AddBookmarkSheet.swift in Sources */,
 				E6206D9EC29B4D3C9B143B8C /* ActionbookCoverService.swift in Sources */,
+				A1B2C3D4E5F6071829A3B4C5D6 /* APIService.swift in Sources */,
+				D5E6F7A8B9C0D1E2F3A4B5C6D /* PlainTextEditor.swift in Sources */,
 				99EAC6973D2FBE20CC3DC0A2 /* Bookmark.swift in Sources */,
 				F2AA9FFA7C46FB04644CAE52 /* BookmarkCardView.swift in Sources */,
 				99CC69ECACD977CC5852A809 /* BookmarkDetailSheet.swift in Sources */,

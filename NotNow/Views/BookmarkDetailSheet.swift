@@ -1,6 +1,7 @@
 import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
 
 struct BookmarkDetailSheet: View {
     @Bindable var bookmark: Bookmark
@@ -11,6 +12,19 @@ struct BookmarkDetailSheet: View {
     @State private var showOpenWith = false
     @State private var isFetchingCover = false
     @State private var coverFetchTask: Task<Void, Never>?
+    /// 使用 Identifiable 行以便新增 header/param 时 SwiftUI 正确刷新
+    private struct APIKeyValueRow: Identifiable {
+        let id = UUID()
+        var key: String
+        var value: String
+    }
+    @State private var apiHeaderRows: [APIKeyValueRow] = []
+    @State private var apiParamRows: [APIKeyValueRow] = []
+    @State private var apiResponse: APIResponse?
+    @State private var isExecutingAPI = false
+    @State private var apiRequestTask: Task<Void, Never>?
+    @AppStorage("ai.enabled") private var aiEnabled = false
+    @State private var isRefiningAPI = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,12 +35,12 @@ struct BookmarkDetailSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     // Cover management
-                    if !bookmark.isSnippet && !bookmark.isTask {
+                    if !bookmark.isSnippet && !bookmark.isTask && !bookmark.isAPI {
                         coverManagement
                     }
 
                     // URL
-                    if !bookmark.isSnippet && !bookmark.isTask {
+                    if !bookmark.isSnippet && !bookmark.isTask && !bookmark.isAPI {
                         VStack(alignment: .leading, spacing: 6) {
                         fieldLabel("链接")
                         HStack(spacing: 8) {
@@ -226,6 +240,306 @@ struct BookmarkDetailSheet: View {
                         }
                     }
 
+                    if bookmark.isAPI {
+                        // Method + URL
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("请求")
+                            HStack(spacing: 8) {
+                                Picker("", selection: Binding(
+                                    get: { bookmark.resolvedAPIMethod },
+                                    set: { bookmark.resolvedAPIMethod = $0; bookmark.updatedAt = Date() }
+                                )) {
+                                    ForEach(HTTPMethod.allCases, id: \.self) { m in
+                                        Text(m.rawValue).tag(m)
+                                    }
+                                }
+                                .frame(width: 90)
+
+                                TextField("https://...", text: $bookmark.url)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(.subheadline, design: .monospaced))
+                                    .darkTextField()
+                            }
+                        }
+
+                        // Query Params
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("Query 参数")
+                            ForEach(apiParamRows) { row in
+                                HStack(spacing: 6) {
+                                    TextField("Key", text: bindingParamKey(row))
+                                        .textFieldStyle(.plain)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .darkTextField()
+
+                                    TextField("Value", text: bindingParamValue(row))
+                                        .textFieldStyle(.plain)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .darkTextField()
+
+                                    Button {
+                                        apiParamRows.removeAll { $0.id == row.id }
+                                        syncParamsToBookmark()
+                                    } label: {
+                                        Image(systemName: "minus.circle")
+                                            .font(.caption)
+                                            .foregroundStyle(AppTheme.accentPink)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            Button {
+                                apiParamRows.append(APIKeyValueRow(key: "", value: ""))
+                                syncParamsToBookmark()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "plus.circle.fill")
+                                    Text("添加 Query 参数")
+                                        .font(.subheadline.weight(.medium))
+                                }
+                                .foregroundStyle(AppTheme.accent)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(AppTheme.accent.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        // Headers
+                        VStack(alignment: .leading, spacing: 6) {
+                            fieldLabel("Headers")
+                            ForEach(apiHeaderRows) { row in
+                                HStack(spacing: 6) {
+                                    TextField("Key", text: bindingHeaderKey(row))
+                                        .textFieldStyle(.plain)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .darkTextField()
+
+                                    TextField("Value", text: bindingHeaderValue(row))
+                                        .textFieldStyle(.plain)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .darkTextField()
+
+                                    Button {
+                                        apiHeaderRows.removeAll { $0.id == row.id }
+                                        syncHeadersToBookmark()
+                                    } label: {
+                                        Image(systemName: "minus.circle")
+                                            .font(.caption)
+                                            .foregroundStyle(AppTheme.accentPink)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            Button {
+                                apiHeaderRows.append(APIKeyValueRow(key: "", value: ""))
+                                syncHeadersToBookmark()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "plus.circle.fill")
+                                    Text("添加 Header")
+                                        .font(.subheadline.weight(.medium))
+                                }
+                                .foregroundStyle(AppTheme.accent)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(AppTheme.accent.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        // Body
+                        if bookmark.resolvedAPIMethod != .GET {
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    fieldLabel("Body")
+                                    Spacer()
+                                    Picker("", selection: Binding(
+                                        get: { bookmark.apiBodyType ?? "json" },
+                                        set: { bookmark.apiBodyType = $0; bookmark.updatedAt = Date() }
+                                    )) {
+                                        Text("JSON").tag("json")
+                                        Text("Form").tag("form")
+                                        Text("Text").tag("text")
+                                        Text("None").tag("none")
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .frame(width: 240)
+                                    if (bookmark.apiBodyType ?? "json") == "json" {
+                                        Button {
+                                            formatAPIBodyDetail()
+                                        } label: {
+                                            HStack(spacing: 5) {
+                                                Image(systemName: "arrow.triangle.2.circlepath")
+                                                Text("Format JSON")
+                                                    .font(.subheadline.weight(.medium))
+                                            }
+                                            .foregroundStyle(AppTheme.accent)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 6)
+                                            .background(AppTheme.accent.opacity(0.15))
+                                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                                if (bookmark.apiBodyType ?? "json") != "none" {
+                                    PlainTextEditor(
+                                        text: Binding(
+                                            get: { bookmark.apiBody ?? "" },
+                                            set: { bookmark.apiBody = $0; bookmark.updatedAt = Date() }
+                                        ),
+                                        minHeight: 120,
+                                        font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+                                    )
+                                    .padding(10)
+                                    .frame(minHeight: 120)
+                                    .background(AppTheme.bgInput)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Send button
+                        HStack(spacing: 12) {
+                            Button {
+                                executeAPIRequest()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    if isExecutingAPI {
+                                        ProgressView().controlSize(.small)
+                                    } else {
+                                        Image(systemName: "paperplane.fill")
+                                    }
+                                    Text("Send")
+                                        .font(.subheadline.weight(.medium))
+                                }
+                                .foregroundStyle(AppTheme.accent)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(AppTheme.accent.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isExecutingAPI || bookmark.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                            Button {
+                                let curl = APIService.generateCURL(
+                                    url: bookmark.url,
+                                    method: bookmark.apiMethod ?? "GET",
+                                    headers: bookmark.apiHeaders,
+                                    queryParams: bookmark.apiQueryParams,
+                                    body: bookmark.apiBody,
+                                    bodyType: bookmark.apiBodyType
+                                )
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(curl, forType: .string)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "doc.on.doc")
+                                    Text("复制 cURL")
+                                        .font(.subheadline.weight(.medium))
+                                }
+                                .foregroundStyle(AppTheme.accent)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(AppTheme.accent.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+
+                            Spacer()
+                        }
+
+                        // Response area（固定高度，内部滚动，不把弹窗顶高）
+                        if let resp = apiResponse {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 8) {
+                                    let statusColor: Color = resp.statusCode >= 200 && resp.statusCode < 300 ? .green :
+                                        resp.statusCode >= 400 ? .red : .orange
+                                    Text("\(resp.statusCode)")
+                                        .font(.system(.subheadline, design: .monospaced).weight(.bold))
+                                        .foregroundStyle(statusColor)
+                                    Text("·")
+                                        .foregroundStyle(AppTheme.textTertiary)
+                                    Text(String(format: "%.0fms", resp.duration * 1000))
+                                        .font(.system(.caption, design: .monospaced))
+                                        .foregroundStyle(AppTheme.textSecondary)
+                                    Spacer()
+                                    Button {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(resp.body, forType: .string)
+                                    } label: {
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "doc.on.doc")
+                                            Text("复制")
+                                        }
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(AppTheme.textSecondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+
+                                ScrollView {
+                                    Text(resp.body)
+                                        .font(.system(size: 12, design: .monospaced))
+                                        .foregroundStyle(AppTheme.textPrimary)
+                                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                                        .textSelection(.enabled)
+                                }
+                                .frame(height: 240)
+                                .scrollContentBackground(.hidden)
+                                .padding(12)
+                                .background(AppTheme.bgInput)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                                )
+                            }
+                            .padding(14)
+                            .background(AppTheme.bgInput.opacity(0.5))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                            )
+                        }
+                    }
+
+                    // API 类型：AI 打标
+                    if bookmark.isAPI && aiEnabled {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                fieldLabel("AI")
+                                Spacer()
+                                Button {
+                                    refineAPIMetadata()
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        if isRefiningAPI {
+                                            ProgressView().controlSize(.mini)
+                                        } else {
+                                            Image(systemName: "sparkles")
+                                                .font(.system(size: 11, weight: .medium))
+                                        }
+                                        Text("AI 打标")
+                                            .font(.system(size: 11, weight: .medium))
+                                    }
+                                    .foregroundStyle(AppTheme.accent)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(isRefiningAPI || bookmark.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            }
+                        }
+                    }
+
                     // Tags
                     VStack(alignment: .leading, spacing: 6) {
                         fieldLabel("标签")
@@ -345,18 +659,186 @@ struct BookmarkDetailSheet: View {
         }
         .frame(minWidth: 560, minHeight: 640)
         .background(AppTheme.bgPrimary)
-        .onAppear { tagsText = bookmark.tags.joined(separator: ", ") }
+        .onAppear {
+            tagsText = bookmark.tags.joined(separator: ", ")
+            if bookmark.isAPI {
+                let headerTuples = APIService.parseKeyValues(bookmark.apiHeaders)
+                apiHeaderRows = headerTuples.map { APIKeyValueRow(key: $0.key, value: $0.value) }
+                if apiHeaderRows.isEmpty { apiHeaderRows = [APIKeyValueRow(key: "", value: "")] }
+                let paramTuples = APIService.parseKeyValues(bookmark.apiQueryParams)
+                apiParamRows = paramTuples.map { APIKeyValueRow(key: $0.key, value: $0.value) }
+                if apiParamRows.isEmpty { apiParamRows = [APIKeyValueRow(key: "", value: "")] }
+            }
+        }
         .onChange(of: bookmark.title) { bookmark.updatedAt = Date() }
         .onChange(of: bookmark.desc) { bookmark.updatedAt = Date() }
         .onChange(of: bookmark.snippetText) { bookmark.updatedAt = Date() }
         .onChange(of: bookmark.notes) { bookmark.updatedAt = Date() }
         .onDisappear {
+            apiRequestTask?.cancel()
             coverFetchTask?.cancel()
             NotificationCenter.default.post(name: .modelDataDidChange, object: nil)
         }
         .sheet(isPresented: $showOpenWith) {
             OpenWithSheet(bookmark: bookmark)
                 .preferredColorScheme(AppTheme.colorScheme)
+        }
+    }
+
+    // MARK: - API Helpers
+
+    private func executeAPIRequest() {
+        apiRequestTask?.cancel()
+        isExecutingAPI = true
+        apiResponse = nil
+        apiRequestTask = Task {
+            let resp = await APIService.execute(
+                url: bookmark.url,
+                method: bookmark.apiMethod ?? "GET",
+                headers: bookmark.apiHeaders,
+                queryParams: bookmark.apiQueryParams,
+                body: bookmark.apiBody,
+                bodyType: bookmark.apiBodyType
+            )
+            if Task.isCancelled { return }
+            await MainActor.run {
+                apiResponse = resp
+                isExecutingAPI = false
+            }
+        }
+    }
+
+    private func syncHeadersToBookmark() {
+        let rows = apiHeaderRows.filter { !$0.key.isEmpty }
+        if rows.isEmpty {
+            bookmark.apiHeaders = nil
+        } else {
+            let arr = rows.map { ["key": $0.key, "value": $0.value, "enabled": true] as [String: Any] }
+            if let data = try? JSONSerialization.data(withJSONObject: arr),
+               let str = String(data: data, encoding: .utf8) {
+                bookmark.apiHeaders = str
+            }
+        }
+        bookmark.updatedAt = Date()
+    }
+
+    private func syncParamsToBookmark() {
+        let rows = apiParamRows.filter { !$0.key.isEmpty }
+        if rows.isEmpty {
+            bookmark.apiQueryParams = nil
+        } else {
+            let arr = rows.map { ["key": $0.key, "value": $0.value, "enabled": true] as [String: Any] }
+            if let data = try? JSONSerialization.data(withJSONObject: arr),
+               let str = String(data: data, encoding: .utf8) {
+                bookmark.apiQueryParams = str
+            }
+        }
+        bookmark.updatedAt = Date()
+    }
+
+    /// 格式化 Body：空则写入空 JSON 模板，否则按 JSON 美化
+    private func formatAPIBodyDetail() {
+        let raw = bookmark.apiBody ?? ""
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            bookmark.apiBody = "{\n  \n}"
+        } else if let formatted = APIService.formatJSON(raw) {
+            bookmark.apiBody = formatted
+        }
+        bookmark.updatedAt = Date()
+    }
+
+    private func bindingHeaderKey(_ row: APIKeyValueRow) -> Binding<String> {
+        Binding(
+            get: { apiHeaderRows.first(where: { $0.id == row.id })?.key ?? "" },
+            set: { newValue in
+                if let i = apiHeaderRows.firstIndex(where: { $0.id == row.id }) {
+                    apiHeaderRows[i].key = newValue
+                    syncHeadersToBookmark()
+                }
+            }
+        )
+    }
+
+    private func bindingHeaderValue(_ row: APIKeyValueRow) -> Binding<String> {
+        Binding(
+            get: { apiHeaderRows.first(where: { $0.id == row.id })?.value ?? "" },
+            set: { newValue in
+                if let i = apiHeaderRows.firstIndex(where: { $0.id == row.id }) {
+                    apiHeaderRows[i].value = newValue
+                    syncHeadersToBookmark()
+                }
+            }
+        )
+    }
+
+    private func bindingParamKey(_ row: APIKeyValueRow) -> Binding<String> {
+        Binding(
+            get: { apiParamRows.first(where: { $0.id == row.id })?.key ?? "" },
+            set: { newValue in
+                if let i = apiParamRows.firstIndex(where: { $0.id == row.id }) {
+                    apiParamRows[i].key = newValue
+                    syncParamsToBookmark()
+                }
+            }
+        )
+    }
+
+    private func bindingParamValue(_ row: APIKeyValueRow) -> Binding<String> {
+        Binding(
+            get: { apiParamRows.first(where: { $0.id == row.id })?.value ?? "" },
+            set: { newValue in
+                if let i = apiParamRows.firstIndex(where: { $0.id == row.id }) {
+                    apiParamRows[i].value = newValue
+                    syncParamsToBookmark()
+                }
+            }
+        )
+    }
+
+    private func refineAPIMetadata() {
+        guard bookmark.isAPI else { return }
+        isRefiningAPI = true
+        let url = bookmark.url
+        let method = bookmark.apiMethod ?? "GET"
+        let bodySnippet = bookmark.apiBody
+        let origTitle = bookmark.title
+        let origDesc = bookmark.desc
+        Task {
+            let ai = await AIService.shared.refineAPI(
+                url: url,
+                method: method,
+                bodySnippet: bodySnippet,
+                originalTitle: origTitle,
+                originalDesc: origDesc
+            )
+            await MainActor.run {
+                isRefiningAPI = false
+                guard let ai else { return }
+                if let t = ai.title, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    bookmark.title = t
+                }
+                if let d = ai.desc, !d.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    bookmark.desc = d
+                }
+                if let tagList = ai.tags, !tagList.isEmpty {
+                    let newTags = tagList
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                    if !newTags.isEmpty {
+                        var seen = Set<String>()
+                        let combined = (bookmark.tags + newTags).filter { tag in
+                            let lower = tag.lowercased()
+                            if seen.contains(lower) { return false }
+                            seen.insert(lower)
+                            return true
+                        }
+                        bookmark.tags = combined
+                        tagsText = combined.joined(separator: ", ")
+                    }
+                }
+                bookmark.updatedAt = Date()
+            }
         }
     }
 
