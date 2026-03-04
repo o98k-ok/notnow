@@ -27,36 +27,34 @@ private actor CoverDecodeLimiter {
 
 /// In-memory cache for decoded cover images to avoid repeated main-thread decode during scroll.
 private enum CoverImageCache {
-    private static let maxEntries = 80
-    private struct CacheKey: Hashable {
-        let id: UUID
-        let signature: UInt64
-    }
-    private static var cache: [CacheKey: NSImage] = [:]
-    private static var order: [CacheKey] = []
-    private static let lock = NSLock()
+    private static let cache: NSCache<NSString, NSImage> = {
+        let c = NSCache<NSString, NSImage>()
+        c.name = "NotNow.CoverImageCache"
+        c.countLimit = 120
+        c.totalCostLimit = 96 * 1024 * 1024
+        return c
+    }()
 
     static func image(for id: UUID, data: Data?) -> NSImage? {
         guard let data else { return nil }
-        let key = CacheKey(id: id, signature: signature(for: data))
-        lock.lock()
-        defer { lock.unlock() }
-        if let cached = cache[key] { return cached }
-        return nil
+        let key = cacheKey(id: id, data: data)
+        return cache.object(forKey: key)
     }
 
     static func set(_ image: NSImage?, for id: UUID, data: Data) {
         guard let image else { return }
-        let key = CacheKey(id: id, signature: signature(for: data))
-        lock.lock()
-        if cache[key] != nil { lock.unlock(); return }
-        while order.count >= maxEntries, let first = order.first {
-            order.removeFirst()
-            cache[first] = nil
-        }
-        cache[key] = image
-        order.append(key)
-        lock.unlock()
+        let key = cacheKey(id: id, data: data)
+        if cache.object(forKey: key) != nil { return }
+        cache.setObject(image, forKey: key, cost: imageMemoryCost(image: image))
+    }
+
+    private static func cacheKey(id: UUID, data: Data) -> NSString {
+        "\(id.uuidString)-\(signature(for: data))" as NSString
+    }
+
+    private static func imageMemoryCost(image: NSImage) -> Int {
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return 0 }
+        return max(1, cg.bytesPerRow * cg.height)
     }
 
     private static func signature(for data: Data) -> UInt64 {
@@ -79,6 +77,7 @@ struct BookmarkCardView: View {
     /// Decoded cover image; loaded async to avoid blocking main thread during scroll.
     @State private var displayCover: NSImage?
     @State private var relativeCreatedAtText = ""
+    @State private var coverLoadTask: Task<Void, Never>?
 
     var body: some View {
         decoratedCard {
@@ -107,10 +106,15 @@ struct BookmarkCardView: View {
         .onAppear {
             refreshRelativeCreatedAtText()
             guard bookmark.hasCover, displayCover == nil else { return }
-            Task { await loadCoverIfNeeded() }
+            scheduleCoverLoad()
         }
         .onChange(of: bookmark.coverData) {
-            Task { await loadCoverIfNeeded() }
+            scheduleCoverLoad()
+        }
+        .onDisappear {
+            coverLoadTask?.cancel()
+            coverLoadTask = nil
+            displayCover = nil
         }
     }
 
@@ -121,6 +125,11 @@ struct BookmarkCardView: View {
         if bookmark.isTask { return 0 }
         if bookmark.isSnippet { return 1 }
         return abs(bookmark.id.hashValue) % 2 == 0 ? 2 : 3
+    }
+
+    private func scheduleCoverLoad() {
+        coverLoadTask?.cancel()
+        coverLoadTask = Task { await loadCoverIfNeeded() }
     }
 
     private func loadCoverIfNeeded() async {
@@ -134,12 +143,21 @@ struct BookmarkCardView: View {
         }
         await CoverDecodeLimiter.shared.acquire()
         defer { Task { await CoverDecodeLimiter.shared.release() } }
-        // 在后台线程解码，但返回 CGImage 避免 Sendable 问题
+        guard !Task.isCancelled else { return }
+        // Decode downsampled thumbnail instead of full-size image to cap memory usage.
         let cgImage = await Task.detached(priority: .utility) { () -> CGImage? in
             guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-            return CGImageSourceCreateImageAtIndex(source, 0, nil)
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 900,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         }.value
+        guard !Task.isCancelled else { return }
         await MainActor.run {
+            guard !Task.isCancelled else { return }
             if let cgImage {
                 let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
                 CoverImageCache.set(image, for: bookmark.id, data: data)

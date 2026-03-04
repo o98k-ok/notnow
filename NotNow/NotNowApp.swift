@@ -1,8 +1,26 @@
+import SQLite3
 import SwiftData
 import SwiftUI
 
 @main
 struct NotNowApp: App {
+    init() {
+        Self.fixOrphanedCategoryReferences()
+    }
+
+    /// Clean up bookmarks that reference deleted categories to prevent SwiftData assertion failures.
+    private static func fixOrphanedCategoryReferences() {
+        let url = URL.applicationSupportDirectory.appendingPathComponent("default.store")
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { return }
+        defer { sqlite3_close(db) }
+
+        let sql = "UPDATE ZBOOKMARK SET ZCATEGORY = NULL WHERE ZCATEGORY IS NOT NULL AND ZCATEGORY NOT IN (SELECT Z_PK FROM ZCATEGORY)"
+        sqlite3_exec(db, sql, nil, nil, nil)
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()

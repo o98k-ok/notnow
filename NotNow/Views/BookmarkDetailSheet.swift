@@ -8,7 +8,50 @@ struct BookmarkDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \Category.sortOrder) var categories: [Category]
 
+    private struct DraftSnapshot: Equatable {
+        var url: String
+        var title: String
+        var desc: String
+        var snippetText: String
+        var notes: String
+        var tags: [String]
+        var isFavorite: Bool
+        var categoryID: UUID?
+        var taskCompleted: Bool
+        var completedAt: Date?
+        var dueDate: Date?
+        var taskPriority: TaskPriority
+        var apiMethod: HTTPMethod
+        var apiHeaders: String?
+        var apiQueryParams: String?
+        var apiBody: String
+        var apiBodyType: String
+        var coverData: Data?
+        var coverURL: String?
+    }
+
+    @State private var draftURL = ""
+    @State private var draftTitle = ""
+    @State private var draftDesc = ""
+    @State private var draftSnippetText = ""
+    @State private var draftNotes = ""
     @State private var tagsText = ""
+    @State private var draftIsFavorite = false
+    @State private var draftCategoryID: UUID?
+    @State private var draftTaskCompleted = false
+    @State private var draftCompletedAt: Date?
+    @State private var draftDueDate: Date?
+    @State private var draftTaskPriority: TaskPriority = .none
+    @State private var draftAPIMethod: HTTPMethod = .GET
+    @State private var draftAPIBody = ""
+    @State private var draftAPIBodyType = "json"
+    @State private var draftCoverData: Data?
+    @State private var draftCoverURL: String?
+    @State private var initialSnapshot: DraftSnapshot?
+    @State private var didInitializeDraft = false
+    @State private var showDiscardChangesDialog = false
+    @State private var showSaveError = false
+    @State private var saveErrorMessage = ""
     @State private var showOpenWith = false
     @State private var isFetchingCover = false
     @State private var coverFetchTask: Task<Void, Never>?
@@ -29,7 +72,7 @@ struct BookmarkDetailSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             sheetHeader(title: "编辑书签", icon: "pencil.circle.fill") {
-                dismiss()
+                handleCloseTapped()
             }
 
             ScrollView {
@@ -48,13 +91,17 @@ struct BookmarkDetailSheet: View {
                                 Image(systemName: "link")
                                     .font(.caption)
                                     .foregroundStyle(AppTheme.textTertiary)
-                                TextField("URL", text: $bookmark.url)
+                                TextField("URL", text: $draftURL)
                                     .textFieldStyle(.plain)
                                     .font(.subheadline)
                             }
                             .darkTextField()
 
-                            Button { OpenService.open(bookmark) } label: {
+                            Button {
+                                if let url = URL(string: draftURL) {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            } label: {
                                 Image(systemName: "arrow.up.right")
                                     .font(.caption.weight(.bold))
                                     .frame(width: 36, height: 36)
@@ -70,7 +117,7 @@ struct BookmarkDetailSheet: View {
                     // Title
                     VStack(alignment: .leading, spacing: 6) {
                         fieldLabel("标题")
-                        TextField("标题", text: $bookmark.title)
+                        TextField("标题", text: $draftTitle)
                             .darkTextField()
                             .font(.subheadline)
                     }
@@ -78,7 +125,7 @@ struct BookmarkDetailSheet: View {
                     // Description
                     VStack(alignment: .leading, spacing: 6) {
                         fieldLabel("描述")
-                        TextField("描述", text: $bookmark.desc)
+                        TextField("描述", text: $draftDesc)
                             .darkTextField()
                             .font(.subheadline)
                     }
@@ -87,8 +134,8 @@ struct BookmarkDetailSheet: View {
                         VStack(alignment: .leading, spacing: 6) {
                             fieldLabel("内容")
                             TextEditor(text: Binding(
-                                get: { bookmark.snippetText },
-                                set: { bookmark.snippetText = $0 }
+                                get: { draftSnippetText },
+                                set: { draftSnippetText = $0 }
                             ))
                                 .font(.system(.subheadline, design: .monospaced))
                                 .scrollContentBackground(.hidden)
@@ -107,19 +154,19 @@ struct BookmarkDetailSheet: View {
                         // Completion toggle
                         HStack(spacing: 12) {
                             statusToggle(
-                                bookmark.taskCompleted ? "已完成" : "未完成",
-                                icon: bookmark.taskCompleted ? "checkmark.circle.fill" : "circle",
+                                draftTaskCompleted ? "已完成" : "未完成",
+                                icon: draftTaskCompleted ? "checkmark.circle.fill" : "circle",
                                 isOn: Binding(
-                                    get: { bookmark.taskCompleted },
+                                    get: { draftTaskCompleted },
                                     set: { newValue in
-                                        bookmark.taskCompleted = newValue
-                                        bookmark.updatedAt = Date()
+                                        draftTaskCompleted = newValue
+                                        draftCompletedAt = newValue ? (draftCompletedAt ?? Date()) : nil
                                     }
                                 ),
                                 color: .green
                             )
 
-                            if let completedAt = bookmark.completedAt {
+                            if let completedAt = draftCompletedAt {
                                 Text("完成于 \(completedAt.formatted(.dateTime.month(.abbreviated).day().hour().minute()))")
                                     .font(.caption)
                                     .foregroundStyle(AppTheme.textTertiary)
@@ -131,10 +178,9 @@ struct BookmarkDetailSheet: View {
                         VStack(alignment: .leading, spacing: 6) {
                             fieldLabel("优先级")
                             Picker("", selection: Binding(
-                                get: { bookmark.resolvedTaskPriority },
+                                get: { draftTaskPriority },
                                 set: { newValue in
-                                    bookmark.resolvedTaskPriority = newValue
-                                    bookmark.updatedAt = Date()
+                                    draftTaskPriority = newValue
                                 }
                             )) {
                                 ForEach(TaskPriority.allCases, id: \.rawValue) { p in
@@ -148,16 +194,15 @@ struct BookmarkDetailSheet: View {
                         VStack(alignment: .leading, spacing: 6) {
                             fieldLabel("截止日期")
                             HStack(spacing: 8) {
-                                if let due = bookmark.dueDate {
+                                if let due = draftDueDate {
                                     DatePicker("", selection: Binding(
                                         get: { due },
-                                        set: { bookmark.dueDate = $0; bookmark.updatedAt = Date() }
+                                        set: { draftDueDate = $0 }
                                     ), displayedComponents: [.date, .hourAndMinute])
                                     .labelsHidden()
 
                                     Button {
-                                        bookmark.dueDate = nil
-                                        bookmark.updatedAt = Date()
+                                        draftDueDate = nil
                                     } label: {
                                         Image(systemName: "xmark.circle.fill")
                                             .font(.caption)
@@ -165,15 +210,14 @@ struct BookmarkDetailSheet: View {
                                     }
                                     .buttonStyle(.plain)
 
-                                    if bookmark.isOverdue {
+                                    if !draftTaskCompleted && due < Date() {
                                         Text("已逾期")
                                             .font(.caption.weight(.medium))
                                             .foregroundStyle(.red)
                                     }
                                 } else {
                                     Button {
-                                        bookmark.dueDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
-                                        bookmark.updatedAt = Date()
+                                        draftDueDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
                                     } label: {
                                         HStack(spacing: 4) {
                                             Image(systemName: "calendar.badge.plus")
@@ -194,7 +238,7 @@ struct BookmarkDetailSheet: View {
                         // Task description
                         VStack(alignment: .leading, spacing: 6) {
                             fieldLabel("任务描述")
-                            TextEditor(text: $bookmark.desc)
+                            TextEditor(text: $draftDesc)
                                 .font(.subheadline)
                                 .scrollContentBackground(.hidden)
                                 .padding(10)
@@ -215,15 +259,15 @@ struct BookmarkDetailSheet: View {
                                     Image(systemName: "link")
                                         .font(.caption)
                                         .foregroundStyle(AppTheme.textTertiary)
-                                    TextField("https://...", text: $bookmark.url)
+                                    TextField("https://...", text: $draftURL)
                                         .textFieldStyle(.plain)
                                         .font(.subheadline)
                                 }
                                 .darkTextField()
 
-                                if !bookmark.url.hasPrefix("task://") {
+                                if !draftURL.hasPrefix("task://") {
                                     Button {
-                                        if let url = URL(string: bookmark.url) {
+                                        if let url = URL(string: draftURL) {
                                             NSWorkspace.shared.open(url)
                                         }
                                     } label: {
@@ -246,8 +290,8 @@ struct BookmarkDetailSheet: View {
                             fieldLabel("请求")
                             HStack(spacing: 8) {
                                 Picker("", selection: Binding(
-                                    get: { bookmark.resolvedAPIMethod },
-                                    set: { bookmark.resolvedAPIMethod = $0; bookmark.updatedAt = Date() }
+                                    get: { draftAPIMethod },
+                                    set: { draftAPIMethod = $0 }
                                 )) {
                                     ForEach(HTTPMethod.allCases, id: \.self) { m in
                                         Text(m.rawValue).tag(m)
@@ -255,7 +299,7 @@ struct BookmarkDetailSheet: View {
                                 }
                                 .frame(width: 90)
 
-                                TextField("https://...", text: $bookmark.url)
+                                TextField("https://...", text: $draftURL)
                                     .textFieldStyle(.plain)
                                     .font(.system(.subheadline, design: .monospaced))
                                     .darkTextField()
@@ -279,7 +323,6 @@ struct BookmarkDetailSheet: View {
 
                                     Button {
                                         apiParamRows.removeAll { $0.id == row.id }
-                                        syncParamsToBookmark()
                                     } label: {
                                         Image(systemName: "minus.circle")
                                             .font(.caption)
@@ -290,7 +333,6 @@ struct BookmarkDetailSheet: View {
                             }
                             Button {
                                 apiParamRows.append(APIKeyValueRow(key: "", value: ""))
-                                syncParamsToBookmark()
                             } label: {
                                 HStack(spacing: 6) {
                                     Image(systemName: "plus.circle.fill")
@@ -323,7 +365,6 @@ struct BookmarkDetailSheet: View {
 
                                     Button {
                                         apiHeaderRows.removeAll { $0.id == row.id }
-                                        syncHeadersToBookmark()
                                     } label: {
                                         Image(systemName: "minus.circle")
                                             .font(.caption)
@@ -334,7 +375,6 @@ struct BookmarkDetailSheet: View {
                             }
                             Button {
                                 apiHeaderRows.append(APIKeyValueRow(key: "", value: ""))
-                                syncHeadersToBookmark()
                             } label: {
                                 HStack(spacing: 6) {
                                     Image(systemName: "plus.circle.fill")
@@ -351,14 +391,14 @@ struct BookmarkDetailSheet: View {
                         }
 
                         // Body
-                        if bookmark.resolvedAPIMethod != .GET {
+                        if draftAPIMethod != .GET {
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack {
                                     fieldLabel("Body")
                                     Spacer()
                                     Picker("", selection: Binding(
-                                        get: { bookmark.apiBodyType ?? "json" },
-                                        set: { bookmark.apiBodyType = $0; bookmark.updatedAt = Date() }
+                                        get: { draftAPIBodyType },
+                                        set: { draftAPIBodyType = $0 }
                                     )) {
                                         Text("JSON").tag("json")
                                         Text("Form").tag("form")
@@ -367,7 +407,7 @@ struct BookmarkDetailSheet: View {
                                     }
                                     .pickerStyle(.segmented)
                                     .frame(width: 240)
-                                    if (bookmark.apiBodyType ?? "json") == "json" {
+                                    if draftAPIBodyType == "json" {
                                         Button {
                                             formatAPIBodyDetail()
                                         } label: {
@@ -385,11 +425,11 @@ struct BookmarkDetailSheet: View {
                                         .buttonStyle(.plain)
                                     }
                                 }
-                                if (bookmark.apiBodyType ?? "json") != "none" {
+                                if draftAPIBodyType != "none" {
                                     PlainTextEditor(
                                         text: Binding(
-                                            get: { bookmark.apiBody ?? "" },
-                                            set: { bookmark.apiBody = $0; bookmark.updatedAt = Date() }
+                                            get: { draftAPIBody },
+                                            set: { draftAPIBody = $0 }
                                         ),
                                         minHeight: 120,
                                         font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
@@ -427,16 +467,16 @@ struct BookmarkDetailSheet: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                             }
                             .buttonStyle(.plain)
-                            .disabled(isExecutingAPI || bookmark.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .disabled(isExecutingAPI || draftURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                             Button {
                                 let curl = APIService.generateCURL(
-                                    url: bookmark.url,
-                                    method: bookmark.apiMethod ?? "GET",
-                                    headers: bookmark.apiHeaders,
-                                    queryParams: bookmark.apiQueryParams,
-                                    body: bookmark.apiBody,
-                                    bodyType: bookmark.apiBodyType
+                                    url: draftURL,
+                                    method: draftAPIMethod.rawValue,
+                                    headers: serializeRows(apiHeaderRows),
+                                    queryParams: serializeRows(apiParamRows),
+                                    body: draftAPIBody,
+                                    bodyType: draftAPIBodyType
                                 )
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setString(curl, forType: .string)
@@ -535,7 +575,7 @@ struct BookmarkDetailSheet: View {
                                     .foregroundStyle(AppTheme.accent)
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(isRefiningAPI || bookmark.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                .disabled(isRefiningAPI || draftURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }
                         }
                     }
@@ -550,19 +590,13 @@ struct BookmarkDetailSheet: View {
                             TextField("逗号分隔", text: $tagsText)
                                 .textFieldStyle(.plain)
                                 .font(.subheadline)
-                                .onChange(of: tagsText) {
-                                    bookmark.tags =
-                                        tagsText.split(separator: ",")
-                                        .map { $0.trimmingCharacters(in: .whitespaces) }
-                                        .filter { !$0.isEmpty }
-                                }
                         }
                         .darkTextField()
 
                         // Tag preview
-                        if !bookmark.tags.isEmpty {
+                        if !draftTags.isEmpty {
                             FlowLayout(spacing: 4) {
-                                ForEach(bookmark.tags, id: \.self) { tag in
+                                ForEach(draftTags, id: \.self) { tag in
                                     let color = TagColor.color(for: tag)
                                     Text(tag)
                                         .font(.system(size: 10, weight: .medium))
@@ -579,7 +613,7 @@ struct BookmarkDetailSheet: View {
                     // Notes
                     VStack(alignment: .leading, spacing: 6) {
                         fieldLabel("备注")
-                        TextEditor(text: $bookmark.notes)
+                        TextEditor(text: $draftNotes)
                             .font(.subheadline)
                             .scrollContentBackground(.hidden)
                             .padding(10)
@@ -596,10 +630,9 @@ struct BookmarkDetailSheet: View {
                     VStack(alignment: .leading, spacing: 6) {
                         fieldLabel("分类")
                         Picker("", selection: Binding(
-                            get: { bookmark.category?.id },
+                            get: { draftCategoryID },
                             set: { newID in
-                                bookmark.category = categories.first { $0.id == newID }
-                                bookmark.updatedAt = Date()
+                                draftCategoryID = newID
                             }
                         )) {
                             Text("无分类").tag(nil as UUID?)
@@ -615,11 +648,9 @@ struct BookmarkDetailSheet: View {
                         statusToggle(
                             "收藏", icon: "star.fill",
                             isOn: Binding(
-                                get: { bookmark.isFavorite },
+                                get: { draftIsFavorite },
                                 set: { newValue in
-                                    bookmark.isFavorite = newValue
-                                    bookmark.updatedAt = Date()
-                                    toggleFavoriteCategory(for: bookmark, isFavorite: newValue)
+                                    draftIsFavorite = newValue
                                 }
                             ), color: .yellow
                         )
@@ -649,7 +680,10 @@ struct BookmarkDetailSheet: View {
 
                 Spacer()
 
-                Button("完成") { dismiss() }
+                Button("取消") { handleCloseTapped() }
+                    .buttonStyle(.plain)
+
+                Button("保存") { saveChanges() }
                     .accentButtonStyle()
                     .buttonStyle(.plain)
                     .keyboardShortcut(.defaultAction)
@@ -660,24 +694,22 @@ struct BookmarkDetailSheet: View {
         .frame(minWidth: 560, minHeight: 640)
         .background(AppTheme.bgPrimary)
         .onAppear {
-            tagsText = bookmark.tags.joined(separator: ", ")
-            if bookmark.isAPI {
-                let headerTuples = APIService.parseKeyValues(bookmark.apiHeaders)
-                apiHeaderRows = headerTuples.map { APIKeyValueRow(key: $0.key, value: $0.value) }
-                if apiHeaderRows.isEmpty { apiHeaderRows = [APIKeyValueRow(key: "", value: "")] }
-                let paramTuples = APIService.parseKeyValues(bookmark.apiQueryParams)
-                apiParamRows = paramTuples.map { APIKeyValueRow(key: $0.key, value: $0.value) }
-                if apiParamRows.isEmpty { apiParamRows = [APIKeyValueRow(key: "", value: "")] }
-            }
+            initializeDraftIfNeeded()
         }
-        .onChange(of: bookmark.title) { bookmark.updatedAt = Date() }
-        .onChange(of: bookmark.desc) { bookmark.updatedAt = Date() }
-        .onChange(of: bookmark.snippetText) { bookmark.updatedAt = Date() }
-        .onChange(of: bookmark.notes) { bookmark.updatedAt = Date() }
         .onDisappear {
             apiRequestTask?.cancel()
             coverFetchTask?.cancel()
-            NotificationCenter.default.post(name: .modelDataDidChange, object: nil)
+        }
+        .confirmationDialog("放弃未保存修改？", isPresented: $showDiscardChangesDialog, titleVisibility: .visible) {
+            Button("放弃修改", role: .destructive) { dismiss() }
+            Button("继续编辑", role: .cancel) {}
+        } message: {
+            Text("你在编辑页的修改尚未保存。")
+        }
+        .alert("保存失败", isPresented: $showSaveError) {
+            Button("确定", role: .cancel) {}
+        } message: {
+            Text(saveErrorMessage)
         }
         .sheet(isPresented: $showOpenWith) {
             OpenWithSheet(bookmark: bookmark)
@@ -693,12 +725,12 @@ struct BookmarkDetailSheet: View {
         apiResponse = nil
         apiRequestTask = Task {
             let resp = await APIService.execute(
-                url: bookmark.url,
-                method: bookmark.apiMethod ?? "GET",
-                headers: bookmark.apiHeaders,
-                queryParams: bookmark.apiQueryParams,
-                body: bookmark.apiBody,
-                bodyType: bookmark.apiBodyType
+                url: draftURL,
+                method: draftAPIMethod.rawValue,
+                headers: serializeRows(apiHeaderRows),
+                queryParams: serializeRows(apiParamRows),
+                body: draftAPIBodyType == "none" ? nil : draftAPIBody,
+                bodyType: draftAPIBodyType
             )
             if Task.isCancelled { return }
             await MainActor.run {
@@ -708,44 +740,15 @@ struct BookmarkDetailSheet: View {
         }
     }
 
-    private func syncHeadersToBookmark() {
-        let rows = apiHeaderRows.filter { !$0.key.isEmpty }
-        if rows.isEmpty {
-            bookmark.apiHeaders = nil
-        } else {
-            let arr = rows.map { ["key": $0.key, "value": $0.value, "enabled": true] as [String: Any] }
-            if let data = try? JSONSerialization.data(withJSONObject: arr),
-               let str = String(data: data, encoding: .utf8) {
-                bookmark.apiHeaders = str
-            }
-        }
-        bookmark.updatedAt = Date()
-    }
-
-    private func syncParamsToBookmark() {
-        let rows = apiParamRows.filter { !$0.key.isEmpty }
-        if rows.isEmpty {
-            bookmark.apiQueryParams = nil
-        } else {
-            let arr = rows.map { ["key": $0.key, "value": $0.value, "enabled": true] as [String: Any] }
-            if let data = try? JSONSerialization.data(withJSONObject: arr),
-               let str = String(data: data, encoding: .utf8) {
-                bookmark.apiQueryParams = str
-            }
-        }
-        bookmark.updatedAt = Date()
-    }
-
     /// 格式化 Body：空则写入空 JSON 模板，否则按 JSON 美化
     private func formatAPIBodyDetail() {
-        let raw = bookmark.apiBody ?? ""
+        let raw = draftAPIBody
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            bookmark.apiBody = "{\n  \n}"
+            draftAPIBody = "{\n  \n}"
         } else if let formatted = APIService.formatJSON(raw) {
-            bookmark.apiBody = formatted
+            draftAPIBody = formatted
         }
-        bookmark.updatedAt = Date()
     }
 
     private func bindingHeaderKey(_ row: APIKeyValueRow) -> Binding<String> {
@@ -754,7 +757,6 @@ struct BookmarkDetailSheet: View {
             set: { newValue in
                 if let i = apiHeaderRows.firstIndex(where: { $0.id == row.id }) {
                     apiHeaderRows[i].key = newValue
-                    syncHeadersToBookmark()
                 }
             }
         )
@@ -766,7 +768,6 @@ struct BookmarkDetailSheet: View {
             set: { newValue in
                 if let i = apiHeaderRows.firstIndex(where: { $0.id == row.id }) {
                     apiHeaderRows[i].value = newValue
-                    syncHeadersToBookmark()
                 }
             }
         )
@@ -778,7 +779,6 @@ struct BookmarkDetailSheet: View {
             set: { newValue in
                 if let i = apiParamRows.firstIndex(where: { $0.id == row.id }) {
                     apiParamRows[i].key = newValue
-                    syncParamsToBookmark()
                 }
             }
         )
@@ -790,7 +790,6 @@ struct BookmarkDetailSheet: View {
             set: { newValue in
                 if let i = apiParamRows.firstIndex(where: { $0.id == row.id }) {
                     apiParamRows[i].value = newValue
-                    syncParamsToBookmark()
                 }
             }
         )
@@ -799,11 +798,11 @@ struct BookmarkDetailSheet: View {
     private func refineAPIMetadata() {
         guard bookmark.isAPI else { return }
         isRefiningAPI = true
-        let url = bookmark.url
-        let method = bookmark.apiMethod ?? "GET"
-        let bodySnippet = bookmark.apiBody
-        let origTitle = bookmark.title
-        let origDesc = bookmark.desc
+        let url = draftURL
+        let method = draftAPIMethod.rawValue
+        let bodySnippet = draftAPIBodyType == "none" ? nil : draftAPIBody
+        let origTitle = draftTitle
+        let origDesc = draftDesc
         Task {
             let ai = await AIService.shared.refineAPI(
                 url: url,
@@ -816,10 +815,10 @@ struct BookmarkDetailSheet: View {
                 isRefiningAPI = false
                 guard let ai else { return }
                 if let t = ai.title, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    bookmark.title = t
+                    draftTitle = t
                 }
                 if let d = ai.desc, !d.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    bookmark.desc = d
+                    draftDesc = d
                 }
                 if let tagList = ai.tags, !tagList.isEmpty {
                     let newTags = tagList
@@ -827,17 +826,15 @@ struct BookmarkDetailSheet: View {
                         .filter { !$0.isEmpty }
                     if !newTags.isEmpty {
                         var seen = Set<String>()
-                        let combined = (bookmark.tags + newTags).filter { tag in
+                        let combined = (draftTags + newTags).filter { tag in
                             let lower = tag.lowercased()
                             if seen.contains(lower) { return false }
                             seen.insert(lower)
                             return true
                         }
-                        bookmark.tags = combined
                         tagsText = combined.joined(separator: ", ")
                     }
                 }
-                bookmark.updatedAt = Date()
             }
         }
     }
@@ -868,7 +865,7 @@ struct BookmarkDetailSheet: View {
                     }
                     .buttonStyle(.plain)
 
-                    if bookmark.coverData != nil {
+                    if draftCoverData != nil {
                         Button { removeCover() } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "xmark")
@@ -886,7 +883,7 @@ struct BookmarkDetailSheet: View {
                 }
             }
 
-            if let data = bookmark.coverData, let image = NSImage(data: data) {
+            if let data = draftCoverData, let image = NSImage(data: data) {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -1032,7 +1029,6 @@ struct BookmarkDetailSheet: View {
     {
         Button {
             isOn.wrappedValue.toggle()
-            bookmark.updatedAt = Date()
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: isOn.wrappedValue ? icon : icon.replacingOccurrences(of: ".fill", with: ""))
@@ -1057,10 +1053,10 @@ struct BookmarkDetailSheet: View {
     }
 
     private func refetchCover(mode: CoverFetchMode) {
-        guard !bookmark.url.isEmpty else { return }
+        guard !draftURL.isEmpty else { return }
         coverFetchTask?.cancel()
         isFetchingCover = true
-        let currentURL = bookmark.url
+        let currentURL = draftURL
         coverFetchTask = Task {
             var imageData: Data?
             var imageURL: String?
@@ -1088,11 +1084,10 @@ struct BookmarkDetailSheet: View {
             
             if Task.isCancelled { return }
             await MainActor.run {
-                if Task.isCancelled || bookmark.url != currentURL { return }
+                if Task.isCancelled || draftURL != currentURL { return }
                 if let data = imageData {
-                    bookmark.coverData = data
-                    bookmark.coverURL = imageURL
-                    bookmark.updatedAt = Date()
+                    draftCoverData = data
+                    draftCoverURL = imageURL
                 }
                 isFetchingCover = false
             }
@@ -1106,18 +1101,16 @@ struct BookmarkDetailSheet: View {
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let fileURL = panel.url {
-            bookmark.coverData = try? Data(contentsOf: fileURL)
-            bookmark.coverURL = nil
-            bookmark.updatedAt = Date()
+            draftCoverData = try? Data(contentsOf: fileURL)
+            draftCoverURL = nil
         }
     }
 
     private func removeCover() {
         coverFetchTask?.cancel()
         isFetchingCover = false
-        bookmark.coverData = nil
-        bookmark.coverURL = nil
-        bookmark.updatedAt = Date()
+        draftCoverData = nil
+        draftCoverURL = nil
     }
 
     private func deleteBookmark() {
@@ -1125,36 +1118,169 @@ struct BookmarkDetailSheet: View {
         dismiss()
     }
 
-    private func toggleFavoriteCategory(for bookmark: Bookmark, isFavorite: Bool) {
-        guard let modelContext = bookmark.modelContext else { return }
-        
-        // 查找或创建收藏分类
+    private var draftTags: [String] {
+        tagsText
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private var hasUnsavedChanges: Bool {
+        guard let initialSnapshot else { return false }
+        return currentSnapshot() != initialSnapshot
+    }
+
+    private func initializeDraftIfNeeded() {
+        guard !didInitializeDraft else { return }
+        didInitializeDraft = true
+
+        draftURL = bookmark.url
+        draftTitle = bookmark.title
+        draftDesc = bookmark.desc
+        draftSnippetText = bookmark.snippetText
+        draftNotes = bookmark.notes
+        tagsText = bookmark.tags.joined(separator: ", ")
+        draftIsFavorite = bookmark.isFavorite
+        draftCategoryID = bookmark.category?.id
+        draftTaskCompleted = bookmark.taskCompleted
+        draftCompletedAt = bookmark.completedAt
+        draftDueDate = bookmark.dueDate
+        draftTaskPriority = bookmark.resolvedTaskPriority
+        draftAPIMethod = bookmark.resolvedAPIMethod
+        draftAPIBodyType = bookmark.apiBodyType ?? "json"
+        draftAPIBody = bookmark.apiBody ?? ""
+        draftCoverData = bookmark.coverData
+        draftCoverURL = bookmark.coverURL
+
+        let headerTuples = APIService.parseKeyValues(bookmark.apiHeaders)
+        apiHeaderRows = headerTuples.map { APIKeyValueRow(key: $0.key, value: $0.value) }
+        if apiHeaderRows.isEmpty { apiHeaderRows = [APIKeyValueRow(key: "", value: "")] }
+
+        let paramTuples = APIService.parseKeyValues(bookmark.apiQueryParams)
+        apiParamRows = paramTuples.map { APIKeyValueRow(key: $0.key, value: $0.value) }
+        if apiParamRows.isEmpty { apiParamRows = [APIKeyValueRow(key: "", value: "")] }
+
+        initialSnapshot = currentSnapshot()
+    }
+
+    private func currentSnapshot() -> DraftSnapshot {
+        DraftSnapshot(
+            url: draftURL,
+            title: draftTitle,
+            desc: draftDesc,
+            snippetText: draftSnippetText,
+            notes: draftNotes,
+            tags: draftTags,
+            isFavorite: draftIsFavorite,
+            categoryID: draftCategoryID,
+            taskCompleted: draftTaskCompleted,
+            completedAt: draftCompletedAt,
+            dueDate: draftDueDate,
+            taskPriority: draftTaskPriority,
+            apiMethod: draftAPIMethod,
+            apiHeaders: serializeRows(apiHeaderRows),
+            apiQueryParams: serializeRows(apiParamRows),
+            apiBody: draftAPIBody,
+            apiBodyType: draftAPIBodyType,
+            coverData: draftCoverData,
+            coverURL: draftCoverURL
+        )
+    }
+
+    private func serializeRows(_ rows: [APIKeyValueRow]) -> String? {
+        let normalizedRows = rows
+            .filter { !$0.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map {
+                (
+                    key: $0.key.trimmingCharacters(in: .whitespacesAndNewlines),
+                    value: $0.value.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            }
+        if normalizedRows.isEmpty { return nil }
+        let arr = normalizedRows.map { ["key": $0.key, "value": $0.value, "enabled": true] as [String: Any] }
+        guard let data = try? JSONSerialization.data(withJSONObject: arr),
+              let str = String(data: data, encoding: .utf8) else { return nil }
+        return str
+    }
+
+    private func handleCloseTapped() {
+        if hasUnsavedChanges {
+            showDiscardChangesDialog = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private func saveChanges() {
+        guard let modelContext = bookmark.modelContext else {
+            dismiss()
+            return
+        }
+        if !hasUnsavedChanges {
+            dismiss()
+            return
+        }
+
+        applyDraftToBookmark(modelContext: modelContext)
+        bookmark.updatedAt = Date()
+
+        do {
+            try modelContext.save()
+            NotificationCenter.default.post(name: .modelDataDidChange, object: nil)
+            initialSnapshot = currentSnapshot()
+            dismiss()
+        } catch {
+            saveErrorMessage = error.localizedDescription
+            showSaveError = true
+        }
+    }
+
+    private func applyDraftToBookmark(modelContext: ModelContext) {
+        bookmark.url = draftURL
+        bookmark.title = draftTitle
+        bookmark.desc = draftDesc
+        bookmark.snippetText = draftSnippetText
+        bookmark.notes = draftNotes
+        bookmark.tags = draftTags
+        bookmark.isFavorite = draftIsFavorite
+        bookmark.taskCompleted = draftTaskCompleted
+        bookmark.completedAt = draftTaskCompleted ? (draftCompletedAt ?? Date()) : nil
+        bookmark.dueDate = draftDueDate
+        bookmark.resolvedTaskPriority = draftTaskPriority
+        bookmark.resolvedAPIMethod = draftAPIMethod
+        bookmark.apiHeaders = serializeRows(apiHeaderRows)
+        bookmark.apiQueryParams = serializeRows(apiParamRows)
+        bookmark.apiBodyType = draftAPIBodyType
+        bookmark.apiBody = draftAPIBodyType == "none" ? nil : draftAPIBody
+        bookmark.coverData = draftCoverData
+        bookmark.coverURL = draftCoverURL
+
+        if draftIsFavorite {
+            bookmark.category = ensureFavoriteCategory(modelContext: modelContext)
+            return
+        }
+
+        let selectedCategory = categories.first { $0.id == draftCategoryID }
+        if selectedCategory?.name == "收藏" {
+            bookmark.category = nil
+        } else {
+            bookmark.category = selectedCategory
+        }
+    }
+
+    private func ensureFavoriteCategory(modelContext: ModelContext) -> Category {
         let fetchDescriptor = FetchDescriptor<Category>()
         let allCategories = (try? modelContext.fetch(fetchDescriptor)) ?? []
-        
-        let favoriteCategory: Category
         if let existing = allCategories.first(where: { $0.name == "收藏" }) {
-            favoriteCategory = existing
-        } else {
-            favoriteCategory = Category(
-                name: "收藏",
-                icon: "star.fill",
-                colorHex: 0xFFD700, // 金色
-                sortOrder: -1
-            )
-            modelContext.insert(favoriteCategory)
+            return existing
         }
-        
-        // 更新书签分类
-        if isFavorite {
-            bookmark.category = favoriteCategory
-        } else {
-            // 如果当前在收藏分类中，移除分类
-            if bookmark.category?.id == favoriteCategory.id {
-                bookmark.category = nil
-            }
-        }
-        
-        try? modelContext.save()
+        let favoriteCategory = Category(
+            name: "收藏",
+            icon: "star.fill",
+            colorHex: 0xFFD700,
+            sortOrder: -1
+        )
+        modelContext.insert(favoriteCategory)
+        return favoriteCategory
     }
 }

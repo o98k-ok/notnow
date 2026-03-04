@@ -48,6 +48,11 @@ struct NotNowExportBookmark: Encodable {
     let completedAt: Date?
     let dueDate: Date?
     let taskPriority: Int?
+    let apiMethod: String?
+    let apiHeaders: String?
+    let apiBody: String?
+    let apiBodyType: String?
+    let apiQueryParams: String?
 }
 
 struct NotNowExportAppConfig: Codable {
@@ -91,6 +96,11 @@ struct NotNowImportBookmark: Decodable {
     let completedAt: Date?
     let dueDate: Date?
     let taskPriority: Int?
+    let apiMethod: String?
+    let apiHeaders: String?
+    let apiBody: String?
+    let apiBodyType: String?
+    let apiQueryParams: String?
 }
 
 struct NotNowImportStats {
@@ -202,7 +212,12 @@ enum NotNowBackupService {
                 isCompleted: b.isCompleted,
                 completedAt: b.completedAt,
                 dueDate: b.dueDate,
-                taskPriority: b.taskPriority
+                taskPriority: b.taskPriority,
+                apiMethod: b.apiMethod,
+                apiHeaders: b.apiHeaders,
+                apiBody: b.apiBody,
+                apiBodyType: b.apiBodyType,
+                apiQueryParams: b.apiQueryParams
             )
         }
         guard let bmData = try? encoder.encode(bmDtos) else {
@@ -349,6 +364,11 @@ enum NotNowBackupService {
             bm.completedAt = b.completedAt
             bm.dueDate = b.dueDate
             bm.taskPriority = b.taskPriority
+            bm.apiMethod = b.apiMethod
+            bm.apiHeaders = b.apiHeaders
+            bm.apiBody = b.apiBody
+            bm.apiBodyType = b.apiBodyType
+            bm.apiQueryParams = b.apiQueryParams
             modelContext.insert(bm)
 
             let coverPath = coversDir.appendingPathComponent(b.id).path
