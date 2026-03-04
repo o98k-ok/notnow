@@ -11,3 +11,8 @@
 | 2026-03-04 | 15:59 | working-tree | `./build.sh` | success | 首次执行，产物输出到 `build/export/NotNow.app` |
 | 2026-03-04 | 16:19 | working-tree | `./build.sh` | failed | `ContentView` 触发 type-check 超时（body 表达式过重） |
 | 2026-03-04 | 16:36 | working-tree | `./build.sh` | success | 调整后重新构建通过，产物输出到 `build/export/NotNow.app` |
+| 2026-03-04 | 17:56 | working-tree | `./build.sh` | success | 目录切换与编辑弹窗卡顿优化后构建通过（保留既有 `ModelContext` sendable 警告） |
+| 2026-03-04 | 18:08 | working-tree | `./build.sh` | failed | 推荐全量化改造首轮编译失败（`ContentView` 括号闭合 + `AIService` actor await） |
+| 2026-03-04 | 18:09 | working-tree | `./build.sh` | success | 修复编译错误后通过；存在新增 `fallbackRecommendations` 异步警告与既有 `ModelContext` 警告 |
+| 2026-03-04 | 18:11 | working-tree | `./build.sh` | success | 将 `fallbackRecommendations`/`recommendationScore` 设为 `nonisolated` 后通过，仅保留既有 `ModelContext` 警告 |
+| 2026-03-04 | 18:24 | working-tree | `./build.sh` | success | 推荐流程覆盖层交互完成后复验通过，仍仅保留既有 `ModelContext` sendable 警告 |

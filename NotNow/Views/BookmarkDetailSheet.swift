@@ -8,6 +8,12 @@ struct BookmarkDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \Category.sortOrder) var categories: [Category]
 
+    private enum CoverEditState: Equatable {
+        case unchanged
+        case removed
+        case replaced
+    }
+
     private struct DraftSnapshot: Equatable {
         var url: String
         var title: String
@@ -26,7 +32,8 @@ struct BookmarkDetailSheet: View {
         var apiQueryParams: String?
         var apiBody: String
         var apiBodyType: String
-        var coverData: Data?
+        var coverEditState: CoverEditState
+        var coverDataSignature: String
         var coverURL: String?
     }
 
@@ -47,8 +54,12 @@ struct BookmarkDetailSheet: View {
     @State private var draftAPIBodyType = "json"
     @State private var draftCoverData: Data?
     @State private var draftCoverURL: String?
+    @State private var coverEditState: CoverEditState = .unchanged
+    @State private var previewCoverImage: NSImage?
+    @State private var isLoadingCoverPreview = false
     @State private var initialSnapshot: DraftSnapshot?
     @State private var didInitializeDraft = false
+    @State private var coverPreviewTask: Task<Void, Never>?
     @State private var showDiscardChangesDialog = false
     @State private var showSaveError = false
     @State private var saveErrorMessage = ""
@@ -694,11 +705,18 @@ struct BookmarkDetailSheet: View {
         .frame(minWidth: 560, minHeight: 640)
         .background(AppTheme.bgPrimary)
         .onAppear {
-            initializeDraftIfNeeded()
+            initializeDraftCoreIfNeeded()
+            scheduleInitialCoverPreviewLoad()
         }
         .onDisappear {
             apiRequestTask?.cancel()
             coverFetchTask?.cancel()
+            coverPreviewTask?.cancel()
+        }
+        .onChange(of: bookmark.coverData) {
+            if coverEditState == .unchanged {
+                scheduleCoverPreviewForCurrentState()
+            }
         }
         .confirmationDialog("放弃未保存修改？", isPresented: $showDiscardChangesDialog, titleVisibility: .visible) {
             Button("放弃修改", role: .destructive) { dismiss() }
@@ -841,6 +859,17 @@ struct BookmarkDetailSheet: View {
 
     // MARK: - Cover Management
 
+    private var hasEditableCover: Bool {
+        switch coverEditState {
+        case .unchanged:
+            return bookmark.coverData != nil
+        case .removed:
+            return false
+        case .replaced:
+            return draftCoverData != nil || previewCoverImage != nil
+        }
+    }
+
     private var coverManagement: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -865,7 +894,7 @@ struct BookmarkDetailSheet: View {
                     }
                     .buttonStyle(.plain)
 
-                    if draftCoverData != nil {
+                    if hasEditableCover {
                         Button { removeCover() } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "xmark")
@@ -883,7 +912,7 @@ struct BookmarkDetailSheet: View {
                 }
             }
 
-            if let data = draftCoverData, let image = NSImage(data: data) {
+            if let image = previewCoverImage {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -894,6 +923,21 @@ struct BookmarkDetailSheet: View {
                             .stroke(AppTheme.borderSubtle, lineWidth: 1)
                     )
                     .allowsHitTesting(false)
+            } else if isLoadingCoverPreview {
+                VStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("封面加载中...")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textTertiary)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 80)
+                .background(AppTheme.bgInput)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                )
             } else {
                 // Placeholder
                 Button { pickImage() } label: {
@@ -1088,6 +1132,8 @@ struct BookmarkDetailSheet: View {
                 if let data = imageData {
                     draftCoverData = data
                     draftCoverURL = imageURL
+                    coverEditState = .replaced
+                    scheduleCoverPreviewForCurrentState()
                 }
                 isFetchingCover = false
             }
@@ -1101,16 +1147,24 @@ struct BookmarkDetailSheet: View {
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let fileURL = panel.url {
-            draftCoverData = try? Data(contentsOf: fileURL)
-            draftCoverURL = nil
+            if let data = try? Data(contentsOf: fileURL) {
+                draftCoverData = data
+                draftCoverURL = nil
+                coverEditState = .replaced
+                scheduleCoverPreviewForCurrentState()
+            }
         }
     }
 
     private func removeCover() {
         coverFetchTask?.cancel()
         isFetchingCover = false
+        coverEditState = .removed
         draftCoverData = nil
         draftCoverURL = nil
+        previewCoverImage = nil
+        coverPreviewTask?.cancel()
+        isLoadingCoverPreview = false
     }
 
     private func deleteBookmark() {
@@ -1130,7 +1184,7 @@ struct BookmarkDetailSheet: View {
         return currentSnapshot() != initialSnapshot
     }
 
-    private func initializeDraftIfNeeded() {
+    private func initializeDraftCoreIfNeeded() {
         guard !didInitializeDraft else { return }
         didInitializeDraft = true
 
@@ -1149,18 +1203,84 @@ struct BookmarkDetailSheet: View {
         draftAPIMethod = bookmark.resolvedAPIMethod
         draftAPIBodyType = bookmark.apiBodyType ?? "json"
         draftAPIBody = bookmark.apiBody ?? ""
-        draftCoverData = bookmark.coverData
+        draftCoverData = nil
         draftCoverURL = bookmark.coverURL
+        coverEditState = .unchanged
+        previewCoverImage = nil
+        isLoadingCoverPreview = false
 
-        let headerTuples = APIService.parseKeyValues(bookmark.apiHeaders)
-        apiHeaderRows = headerTuples.map { APIKeyValueRow(key: $0.key, value: $0.value) }
-        if apiHeaderRows.isEmpty { apiHeaderRows = [APIKeyValueRow(key: "", value: "")] }
+        if bookmark.isAPI {
+            let headerTuples = APIService.parseKeyValues(bookmark.apiHeaders)
+            apiHeaderRows = headerTuples.map { APIKeyValueRow(key: $0.key, value: $0.value) }
+            if apiHeaderRows.isEmpty { apiHeaderRows = [APIKeyValueRow(key: "", value: "")] }
 
-        let paramTuples = APIService.parseKeyValues(bookmark.apiQueryParams)
-        apiParamRows = paramTuples.map { APIKeyValueRow(key: $0.key, value: $0.value) }
-        if apiParamRows.isEmpty { apiParamRows = [APIKeyValueRow(key: "", value: "")] }
+            let paramTuples = APIService.parseKeyValues(bookmark.apiQueryParams)
+            apiParamRows = paramTuples.map { APIKeyValueRow(key: $0.key, value: $0.value) }
+            if apiParamRows.isEmpty { apiParamRows = [APIKeyValueRow(key: "", value: "")] }
+        } else {
+            apiHeaderRows = []
+            apiParamRows = []
+        }
 
         initialSnapshot = currentSnapshot()
+    }
+
+    private func scheduleInitialCoverPreviewLoad() {
+        guard !bookmark.isSnippet, !bookmark.isTask, !bookmark.isAPI else { return }
+        scheduleCoverPreviewForCurrentState()
+    }
+
+    private func scheduleCoverPreviewForCurrentState() {
+        coverPreviewTask?.cancel()
+        let dataToPreview: Data?
+        switch coverEditState {
+        case .unchanged:
+            dataToPreview = bookmark.coverData
+        case .removed:
+            dataToPreview = nil
+        case .replaced:
+            dataToPreview = draftCoverData
+        }
+
+        guard let dataToPreview else {
+            previewCoverImage = nil
+            isLoadingCoverPreview = false
+            return
+        }
+
+        if let cached = CoverImageCache.image(for: bookmark.id, data: dataToPreview) {
+            previewCoverImage = cached
+            isLoadingCoverPreview = false
+            return
+        }
+
+        isLoadingCoverPreview = true
+        let bookmarkID = bookmark.id
+        let currentCoverState = coverEditState
+        coverPreviewTask = Task {
+            await CoverDecodeLimiter.shared.acquire()
+            defer { Task { await CoverDecodeLimiter.shared.release() } }
+            if Task.isCancelled { return }
+
+            let cgImage = await CoverImageCache.decodeThumbnailCGImage(
+                data: dataToPreview,
+                maxPixelSize: 1200
+            )
+            if Task.isCancelled { return }
+
+            await MainActor.run {
+                guard !Task.isCancelled else { return }
+                guard coverEditState == currentCoverState else { return }
+                if let cgImage {
+                    let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                    CoverImageCache.set(image, for: bookmarkID, data: dataToPreview)
+                    previewCoverImage = image
+                } else {
+                    previewCoverImage = nil
+                }
+                isLoadingCoverPreview = false
+            }
+        }
     }
 
     private func currentSnapshot() -> DraftSnapshot {
@@ -1182,9 +1302,31 @@ struct BookmarkDetailSheet: View {
             apiQueryParams: serializeRows(apiParamRows),
             apiBody: draftAPIBody,
             apiBodyType: draftAPIBodyType,
-            coverData: draftCoverData,
+            coverEditState: coverEditState,
+            coverDataSignature: coverSnapshotDataSignature(),
             coverURL: draftCoverURL
         )
+    }
+
+    private func coverSnapshotDataSignature() -> String {
+        switch coverEditState {
+        case .unchanged:
+            return "unchanged"
+        case .removed:
+            return "removed"
+        case .replaced:
+            return "replaced:\(dataSignature(draftCoverData))"
+        }
+    }
+
+    private func dataSignature(_ data: Data?) -> String {
+        guard let data else { return "nil" }
+        var hash: UInt64 = UInt64(data.count)
+        let prefixCount = min(24, data.count)
+        for byte in data.prefix(prefixCount) {
+            hash = (hash &* 16777619) ^ UInt64(byte)
+        }
+        return "\(data.count)-\(hash)"
     }
 
     private func serializeRows(_ rows: [APIKeyValueRow]) -> String? {
@@ -1252,8 +1394,16 @@ struct BookmarkDetailSheet: View {
         bookmark.apiQueryParams = serializeRows(apiParamRows)
         bookmark.apiBodyType = draftAPIBodyType
         bookmark.apiBody = draftAPIBodyType == "none" ? nil : draftAPIBody
-        bookmark.coverData = draftCoverData
-        bookmark.coverURL = draftCoverURL
+        switch coverEditState {
+        case .unchanged:
+            break
+        case .removed:
+            bookmark.coverData = nil
+            bookmark.coverURL = nil
+        case .replaced:
+            bookmark.coverData = draftCoverData
+            bookmark.coverURL = draftCoverURL
+        }
 
         if draftIsFavorite {
             bookmark.category = ensureFavoriteCategory(modelContext: modelContext)

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// 限制封面解码并发数，避免同时解码过多导致卡顿
-private actor CoverDecodeLimiter {
+actor CoverDecodeLimiter {
     static let shared = CoverDecodeLimiter()
     private var active = 0
     private let maxConcurrent = 4
@@ -26,7 +26,7 @@ private actor CoverDecodeLimiter {
 }
 
 /// In-memory cache for decoded cover images to avoid repeated main-thread decode during scroll.
-private enum CoverImageCache {
+enum CoverImageCache {
     private static let cache: NSCache<NSString, NSImage> = {
         let c = NSCache<NSString, NSImage>()
         c.name = "NotNow.CoverImageCache"
@@ -46,6 +46,19 @@ private enum CoverImageCache {
         let key = cacheKey(id: id, data: data)
         if cache.object(forKey: key) != nil { return }
         cache.setObject(image, forKey: key, cost: imageMemoryCost(image: image))
+    }
+
+    static func decodeThumbnailCGImage(data: Data, maxPixelSize: Int = 900) async -> CGImage? {
+        await Task.detached(priority: .utility) { () -> CGImage? in
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        }.value
     }
 
     private static func cacheKey(id: UUID, data: Data) -> NSString {
@@ -144,17 +157,7 @@ struct BookmarkCardView: View {
         await CoverDecodeLimiter.shared.acquire()
         defer { Task { await CoverDecodeLimiter.shared.release() } }
         guard !Task.isCancelled else { return }
-        // Decode downsampled thumbnail instead of full-size image to cap memory usage.
-        let cgImage = await Task.detached(priority: .utility) { () -> CGImage? in
-            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-            let options: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: 900,
-                kCGImageSourceShouldCacheImmediately: true,
-            ]
-            return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
-        }.value
+        let cgImage = await CoverImageCache.decodeThumbnailCGImage(data: data)
         guard !Task.isCancelled else { return }
         await MainActor.run {
             guard !Task.isCancelled else { return }

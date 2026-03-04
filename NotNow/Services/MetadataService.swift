@@ -290,7 +290,7 @@ struct AITitleDescription {
     let tags: [String]?
 }
 
-struct AIRecommendationCandidate {
+struct AIRecommendationCandidate: Sendable {
     let url: String
     let title: String
     let desc: String
@@ -299,7 +299,7 @@ struct AIRecommendationCandidate {
     let snippet: String
 }
 
-struct AIRecommendationResult {
+struct AIRecommendationResult: Sendable {
     let summary: String?
     let selectedURLs: [String]
 }
@@ -786,7 +786,7 @@ actor AIService {
             return String(cleaned.prefix(max))
         }
 
-        let promptCandidates = candidates.prefix(180).map {
+        let promptCandidates = candidates.map {
             PromptCandidate(
                 url: trim($0.url, max: 220),
                 title: trim($0.title, max: 120),
@@ -891,6 +891,160 @@ actor AIService {
         } catch {
             return nil
         }
+    }
+
+    private func recommendationURLKey(_ rawURL: String) -> String {
+        rawURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func stableDedupCandidates(_ candidates: [AIRecommendationCandidate]) -> [AIRecommendationCandidate] {
+        var seen = Set<String>()
+        var result: [AIRecommendationCandidate] = []
+        result.reserveCapacity(candidates.count)
+        for candidate in candidates {
+            let key = recommendationURLKey(candidate.url)
+            guard !key.isEmpty else { continue }
+            if seen.insert(key).inserted {
+                result.append(candidate)
+            }
+        }
+        return result
+    }
+
+    private func chunkCandidates(_ candidates: [AIRecommendationCandidate], chunkSize: Int) -> [[AIRecommendationCandidate]] {
+        guard chunkSize > 0, !candidates.isEmpty else { return [] }
+        var chunks: [[AIRecommendationCandidate]] = []
+        chunks.reserveCapacity((candidates.count + chunkSize - 1) / chunkSize)
+        var index = 0
+        while index < candidates.count {
+            let end = min(index + chunkSize, candidates.count)
+            chunks.append(Array(candidates[index..<end]))
+            index = end
+        }
+        return chunks
+    }
+
+    private func shortlistCandidates(
+        from chunk: [AIRecommendationCandidate],
+        selectedURLs: [String],
+        fallbackLimit: Int
+    ) -> [AIRecommendationCandidate] {
+        guard !chunk.isEmpty, fallbackLimit > 0 else { return [] }
+
+        let byKey = Dictionary(grouping: chunk, by: { recommendationURLKey($0.url) })
+        var selected: [AIRecommendationCandidate] = []
+        selected.reserveCapacity(min(fallbackLimit, chunk.count))
+        var seen = Set<String>()
+
+        for url in selectedURLs {
+            let key = recommendationURLKey(url)
+            guard !key.isEmpty else { continue }
+            guard let candidate = byKey[key]?.first else { continue }
+            if seen.insert(key).inserted {
+                selected.append(candidate)
+                if selected.count >= fallbackLimit { return selected }
+            }
+        }
+
+        for candidate in chunk {
+            let key = recommendationURLKey(candidate.url)
+            guard !key.isEmpty else { continue }
+            if seen.insert(key).inserted {
+                selected.append(candidate)
+                if selected.count >= fallbackLimit { break }
+            }
+        }
+
+        return selected
+    }
+
+    func recommendBookmarksTournament(
+        query: String,
+        candidates: [AIRecommendationCandidate],
+        maxResults: Int,
+        chunkSize: Int = 120,
+        shortlistPerChunk: Int = 12,
+        concurrency: Int = 3,
+        onProgress: @Sendable @escaping (_ completed: Int, _ total: Int) -> Void = { _, _ in }
+    ) async -> AIRecommendationResult? {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty, !candidates.isEmpty, maxResults > 0 else { return nil }
+
+        let effectiveChunkSize = max(16, chunkSize)
+        let effectiveShortlist = max(1, min(shortlistPerChunk, max(1, effectiveChunkSize / 2)))
+        let effectiveConcurrency = max(1, concurrency)
+        var current = stableDedupCandidates(candidates)
+        var latestSummary: String?
+
+        while current.count > effectiveChunkSize {
+            guard !Task.isCancelled else { return nil }
+            let chunks = chunkCandidates(current, chunkSize: effectiveChunkSize)
+            let totalChunks = chunks.count
+            guard totalChunks > 0 else { break }
+            onProgress(0, totalChunks)
+
+            var completedChunks = 0
+            var selectedByChunk: [Int: [AIRecommendationCandidate]] = [:]
+            selectedByChunk.reserveCapacity(totalChunks)
+
+            var cursor = 0
+            while cursor < totalChunks {
+                let end = min(cursor + effectiveConcurrency, totalChunks)
+                await withTaskGroup(of: (Int, [AIRecommendationCandidate], String?).self) { group in
+                    for chunkIndex in cursor..<end {
+                        let chunk = chunks[chunkIndex]
+                        group.addTask {
+                            let perChunkLimit = min(effectiveShortlist, chunk.count)
+                            let result = await self.recommendBookmarks(
+                                query: trimmedQuery,
+                                candidates: chunk,
+                                maxResults: perChunkLimit
+                            )
+                            let selected = await self.shortlistCandidates(
+                                from: chunk,
+                                selectedURLs: result?.selectedURLs ?? [],
+                                fallbackLimit: perChunkLimit
+                            )
+                            return (chunkIndex, selected, result?.summary)
+                        }
+                    }
+
+                    for await (chunkIndex, selected, summary) in group {
+                        selectedByChunk[chunkIndex] = selected
+                        if let summary = summary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
+                            latestSummary = summary
+                        }
+                        completedChunks += 1
+                        onProgress(completedChunks, totalChunks)
+                    }
+                }
+                cursor = end
+            }
+
+            var nextRound: [AIRecommendationCandidate] = []
+            nextRound.reserveCapacity(min(current.count, totalChunks * effectiveShortlist))
+            for chunkIndex in 0..<totalChunks {
+                if let selected = selectedByChunk[chunkIndex] {
+                    nextRound.append(contentsOf: selected)
+                }
+            }
+
+            let dedupedNext = stableDedupCandidates(nextRound)
+            if dedupedNext.isEmpty { break }
+            current = dedupedNext
+        }
+
+        guard !Task.isCancelled else { return nil }
+        guard !current.isEmpty else { return nil }
+
+        if let final = await recommendBookmarks(query: trimmedQuery, candidates: current, maxResults: maxResults) {
+            return final
+        }
+
+        return AIRecommendationResult(
+            summary: latestSummary,
+            selectedURLs: Array(current.map(\.url).prefix(maxResults))
+        )
     }
 
     /// 根据页面结构分析最佳 OG 封面区域，返回 CSS 选择器

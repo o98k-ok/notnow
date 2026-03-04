@@ -2,7 +2,7 @@ import AppKit
 import SwiftData
 import SwiftUI
 
-enum SidebarSelection: Hashable {
+enum SidebarSelection: Hashable, Sendable {
     case all
     case recommend
     case category(UUID)
@@ -46,6 +46,9 @@ struct ContentView: View {
     @State private var allBookmarkCount = 0
     @State private var currentFetchLimit = ContentView.pageSize
     @State private var isLoadingMore = false
+    @State private var isScopeLoading = false
+    @State private var scopeLoadGeneration = 0
+    @State private var scopeLoadTask: Task<Void, Never>?
     @State private var categoryBookmarkCounts: [UUID: Int] = [:]
     @State private var uncategorizedBookmarkCount = 0
     @State private var columnBookmarksCache: [[Bookmark]] = []
@@ -58,12 +61,53 @@ struct ContentView: View {
     @State private var recommendedBookmarks: [Bookmark] = []
     @State private var isRecommending = false
     @State private var recommendationTask: Task<Void, Never>?
+    @State private var recommendationProgressText = ""
+    @State private var recommendationRunID = UUID()
+    @State private var recommendationCompletedBatches = 0
+    @State private var recommendationTotalBatches = 0
     @State private var recommendationFocusRequest = 0
     @State private var didRunInitialRecommendation = false
-    @State private var recommendationCycle = 0
     private let searchDebounceNanoseconds: UInt64 = 450_000_000
-    private static let recommendationCandidateMax = 320
-    private static let recommendationWindowMax = 640
+
+    private enum RecommendationStage {
+        case idle
+        case localRanking
+        case aiDeep
+        case done
+    }
+
+    @State private var recommendationStage: RecommendationStage = .idle
+
+    private struct BookmarkFetchResult {
+        let bookmarks: [Bookmark]
+        let totalFilteredCount: Int
+    }
+
+    private struct RecommendationSnapshot: Sendable {
+        let id: UUID
+        let url: String
+        let title: String
+        let desc: String
+        let notes: String
+        let tags: [String]
+        let snippet: String
+        let isFavorite: Bool
+        let updatedAt: Date
+        let createdAt: Date
+
+        init(bookmark: Bookmark) {
+            id = bookmark.id
+            url = bookmark.url
+            title = bookmark.title
+            desc = bookmark.desc
+            notes = bookmark.notes
+            tags = bookmark.tags
+            snippet = bookmark.snippetText
+            isFavorite = bookmark.isFavorite
+            updatedAt = bookmark.updatedAt
+            createdAt = bookmark.createdAt
+        }
+    }
 
     private var currentTheme: AccentTheme {
         AccentTheme(rawValue: accentThemeName) ?? .dark
@@ -168,8 +212,11 @@ struct ContentView: View {
             }
         }
         .onChange(of: selection) {
-            currentFetchLimit = ContentView.pageSize
             if selection == .recommend {
+                scopeLoadTask?.cancel()
+                scopeLoadTask = nil
+                isScopeLoading = false
+                isLoadingMore = false
                 if recommendationQuery.isEmpty {
                     recommendationQuery = "推荐我现在最值得看的内容"
                 }
@@ -179,7 +226,14 @@ struct ContentView: View {
                     refreshRecommendations()
                 }
             } else {
-                fetchBookmarks()
+                recommendationTask?.cancel()
+                recommendationTask = nil
+                isRecommending = false
+                recommendationStage = .idle
+                recommendationProgressText = ""
+                recommendationCompletedBatches = 0
+                recommendationTotalBatches = 0
+                requestBookmarksReload(resetLimit: true)
             }
         }
         .onChange(of: columnCount) {
@@ -197,6 +251,15 @@ struct ContentView: View {
         .onDisappear {
             recommendationTask?.cancel()
             recommendationTask = nil
+            isRecommending = false
+            recommendationStage = .idle
+            recommendationProgressText = ""
+            recommendationCompletedBatches = 0
+            recommendationTotalBatches = 0
+            scopeLoadTask?.cancel()
+            scopeLoadTask = nil
+            isScopeLoading = false
+            isLoadingMore = false
         }
         .alert("导入结果", isPresented: $showImportAlert) {
             Button("好的", role: .cancel) {}
@@ -413,8 +476,7 @@ struct ContentView: View {
                     focusRequest: searchFocusRequest,
                     debounceNanoseconds: searchDebounceNanoseconds
                 ) {
-                    currentFetchLimit = ContentView.pageSize
-                    fetchBookmarks()
+                    requestBookmarksReload(resetLimit: true)
                 }
             }
             .padding(.horizontal, 12)
@@ -622,6 +684,13 @@ struct ContentView: View {
                     .stroke(AppTheme.borderSubtle, lineWidth: 1)
             )
 
+            if !recommendationProgressText.isEmpty {
+                Text(recommendationProgressText)
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.textTertiary)
+                    .frame(maxWidth: 760, alignment: .leading)
+            }
+
             if !recommendationSummary.isEmpty {
                 Text(recommendationSummary)
                     .font(.caption)
@@ -644,26 +713,38 @@ struct ContentView: View {
             GridItem(.flexible(minimum: 220, maximum: 360), spacing: 14, alignment: .top),
         ]
         return GeometryReader { _ in
-            ScrollView {
-                if recommendedBookmarks.isEmpty {
-                    recommendationEmptyState
-                } else {
-                    let display = Array(recommendedBookmarks.prefix(recommendationDisplayLimit))
+            ZStack {
+                ScrollView {
+                    if recommendedBookmarks.isEmpty {
+                        recommendationEmptyState
+                    } else {
+                        let display = Array(recommendedBookmarks.prefix(recommendationDisplayLimit))
 
-                    VStack {
-                        LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
-                            ForEach(display, id: \.id) { bm in
-                                bookmarkCell(for: bm)
+                        VStack {
+                            LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                                ForEach(display, id: \.id) { bm in
+                                    bookmarkCell(for: bm)
+                                }
                             }
+                            .frame(maxWidth: 1460, alignment: .topLeading)
                         }
-                        .frame(maxWidth: 1460, alignment: .topLeading)
+                        .frame(maxWidth: .infinity, alignment: .top)
+                        .padding(.horizontal, 22)
+                        .padding(.bottom, 8)
                     }
-                    .frame(maxWidth: .infinity, alignment: .top)
-                    .padding(.horizontal, 22)
-                    .padding(.bottom, 8)
+                }
+                .scrollIndicators(.visible)
+                .allowsHitTesting(!shouldShowRecommendationPipeline)
+                .blur(radius: shouldShowRecommendationPipeline ? 2 : 0)
+                .opacity(shouldShowRecommendationPipeline ? 0.2 : 1)
+                .animation(.easeOut(duration: 0.2), value: shouldShowRecommendationPipeline)
+
+                if shouldShowRecommendationPipeline {
+                    recommendationPipelineOverlay
+                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                        .zIndex(2)
                 }
             }
-            .scrollIndicators(.visible)
         }
     }
 
@@ -672,7 +753,9 @@ struct ContentView: View {
             Image(systemName: isRecommending ? "hourglass" : "sparkles")
                 .font(.title2)
                 .foregroundStyle(AppTheme.textTertiary)
-            Text(isRecommending ? "正在分析你的数据..." : "输入你的需求，AI 会推荐最有价值的卡片")
+            Text(isRecommending
+                 ? (recommendationProgressText.isEmpty ? "正在分析你的数据..." : recommendationProgressText)
+                 : "输入你的需求，AI 会推荐最有价值的卡片")
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.textSecondary)
         }
@@ -682,6 +765,154 @@ struct ContentView: View {
 
     private var recommendationDisplayLimit: Int {
         8
+    }
+
+    private var shouldShowRecommendationPipeline: Bool {
+        selection == .recommend && isRecommending
+    }
+
+    private var recommendationProgressFraction: Double {
+        switch recommendationStage {
+        case .idle:
+            return 0
+        case .localRanking:
+            return 0.3
+        case .aiDeep:
+            guard recommendationTotalBatches > 0 else { return 0.72 }
+            let progress = Double(recommendationCompletedBatches) / Double(recommendationTotalBatches)
+            return min(1, max(0, progress))
+        case .done:
+            return 1
+        }
+    }
+
+    private var recommendationPipelineTitle: String {
+        switch recommendationStage {
+        case .idle: "准备推荐"
+        case .localRanking: "全量初排中"
+        case .aiDeep: "AI 深度分析中"
+        case .done: "推荐完成"
+        }
+    }
+
+    private var recommendationPipelineSubtitle: String {
+        if !recommendationProgressText.isEmpty {
+            return recommendationProgressText
+        }
+        switch recommendationStage {
+        case .idle:
+            return "正在准备推荐流程"
+        case .localRanking:
+            return "正在覆盖全部卡片并计算基础相关度"
+        case .aiDeep:
+            return "正在进行多轮筛选与精排"
+        case .done:
+            return "推荐结果已生成"
+        }
+    }
+
+    private var recommendationPipelineOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.28)
+                .ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles.rectangle.stack")
+                        .foregroundStyle(currentTheme.color)
+                    Text("正在生成推荐")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                }
+
+                recommendationStepIndicator
+                recommendationProgressBar
+
+                Text(recommendationPipelineTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.textPrimary)
+
+                Text(recommendationPipelineSubtitle)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textTertiary)
+            }
+            .frame(maxWidth: 620, alignment: .leading)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(AppTheme.bgInput.opacity(0.92))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
+            )
+            .padding(.horizontal, 22)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {}
+    }
+
+    private var recommendationStepIndicator: some View {
+        HStack(spacing: 10) {
+            recommendationStepBadge(
+                title: "全量初排",
+                isActive: recommendationStage == .localRanking,
+                isCompleted: recommendationStage == .aiDeep || recommendationStage == .done
+            )
+            Image(systemName: "arrow.right")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(AppTheme.textTertiary)
+            recommendationStepBadge(
+                title: "AI 深度分析",
+                isActive: recommendationStage == .aiDeep,
+                isCompleted: recommendationStage == .done
+            )
+        }
+    }
+
+    private func recommendationStepBadge(title: String, isActive: Bool, isCompleted: Bool) -> some View {
+        let tint: Color = isCompleted ? AppTheme.accentGreen : (isActive ? currentTheme.color : AppTheme.textTertiary)
+        let bg: Color = isCompleted ? AppTheme.accentGreen.opacity(0.14) : (isActive ? currentTheme.color.opacity(0.14) : AppTheme.bgElevated)
+        let icon = isCompleted ? "checkmark.circle.fill" : (isActive ? "hourglass" : "circle")
+        return HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption.weight(.semibold))
+            Text(title)
+                .font(.caption.weight(.semibold))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(bg)
+        .clipShape(Capsule())
+    }
+
+    private var recommendationProgressBar: some View {
+        GeometryReader { proxy in
+            let width = max(proxy.size.width, 1)
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(AppTheme.bgElevated)
+                if recommendationStage == .localRanking {
+                    TimelineView(.animation(minimumInterval: 0.03, paused: false)) { context in
+                        let duration = 1.2
+                        let phase = context.date.timeIntervalSinceReferenceDate
+                            .truncatingRemainder(dividingBy: duration) / duration
+                        let segment = max(52, width * 0.28)
+                        let offset = ((width + segment) * phase) - segment
+                        Capsule()
+                            .fill(currentTheme.gradient)
+                            .frame(width: segment)
+                            .offset(x: offset)
+                    }
+                } else {
+                    Capsule()
+                        .fill(currentTheme.gradient)
+                        .frame(width: width * recommendationProgressFraction)
+                        .animation(.easeOut(duration: 0.25), value: recommendationProgressFraction)
+                }
+            }
+        }
+        .frame(height: 8)
     }
 
     private var topBarTitle: String {
@@ -714,21 +945,19 @@ struct ContentView: View {
     }
 
     private func loadMore() {
-        guard !isLoadingMore, bookmarks.count < totalFilteredCount else { return }
+        guard !isLoadingMore, !isScopeLoading, bookmarks.count < totalFilteredCount else { return }
         isLoadingMore = true
         currentFetchLimit += ContentView.pageSize
-        fetchBookmarks()
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            isLoadingMore = false
-        }
+        requestBookmarksReload(resetLimit: false)
     }
 
     private var bookmarkGrid: some View {
         GeometryReader { proxy in
             VStack(spacing: 0) {
                 ScrollView {
-                    if bookmarks.isEmpty {
+                    if isScopeLoading && bookmarks.isEmpty {
+                        loadingState
+                    } else if bookmarks.isEmpty {
                         emptyState
                     } else {
                         let contentWidth = max(proxy.size.width - 44, 1)
@@ -777,7 +1006,7 @@ struct ContentView: View {
     /// 底部固定：已显示数量 / 总数、加载进度，以及强制刷新按钮
     private func listProgressFooter() -> some View {
         VStack(spacing: 6) {
-            if isLoadingMore {
+            if isScopeLoading || isLoadingMore {
                 ProgressView()
                     .progressViewStyle(.linear)
                     .frame(height: 3)
@@ -837,6 +1066,18 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 .padding(.top, 8)
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.top, 80)
+    }
+
+    private var loadingState: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.regular)
+            Text("正在加载目录内容...")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.textTertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.top, 80)
@@ -1128,7 +1369,7 @@ struct ContentView: View {
                 refreshRecommendations()
             }
         } else {
-            fetchBookmarks()
+            requestBookmarksReload(resetLimit: false)
         }
     }
 
@@ -1152,37 +1393,83 @@ struct ContentView: View {
         }
     }
 
-    private func fetchBookmarks() {
-        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let scopePredicate = currentScopePredicate()
+    private func requestBookmarksReload(resetLimit: Bool) {
+        guard selection != .recommend else { return }
 
-        if q.isEmpty {
+        if resetLimit {
+            currentFetchLimit = ContentView.pageSize
+            isLoadingMore = false
+        }
+
+        scopeLoadTask?.cancel()
+        scopeLoadGeneration += 1
+        let generation = scopeLoadGeneration
+        let selectedScope = selection
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let limit = currentFetchLimit
+        isScopeLoading = true
+
+        scopeLoadTask = Task(priority: .userInitiated) { @MainActor in
+            await Task.yield()
+            if Task.isCancelled { return }
+            let result = fetchBookmarksResult(selection: selectedScope, query: query, limit: limit)
+            if Task.isCancelled { return }
+            guard generation == scopeLoadGeneration else { return }
+
+            bookmarks = result.bookmarks
+            totalFilteredCount = result.totalFilteredCount
+            columnBookmarksCache = splitIntoColumns(bookmarks: result.bookmarks, columns: columnCount)
+            selectedBookmarkIDs = selectedBookmarkIDs.intersection(Set(result.bookmarks.map(\.id)))
+            isScopeLoading = false
+            isLoadingMore = false
+        }
+    }
+
+    @MainActor
+    private func fetchBookmarksResult(
+        selection: SidebarSelection,
+        query: String,
+        limit: Int
+    ) -> BookmarkFetchResult {
+        let scopePredicate = scopePredicate(for: selection)
+
+        if query.isEmpty {
             var descriptor = FetchDescriptor<Bookmark>(
                 predicate: scopePredicate,
                 sortBy: [SortDescriptor(\Bookmark.createdAt, order: .reverse)]
             )
-            descriptor.fetchLimit = currentFetchLimit
-            bookmarks = (try? modelContext.fetch(descriptor)) ?? []
-
-            var countDescriptor = FetchDescriptor<Bookmark>(predicate: scopePredicate)
-            countDescriptor.propertiesToFetch = []
-            totalFilteredCount = (try? modelContext.fetchCount(countDescriptor)) ?? 0
-        } else {
-            let descriptor = FetchDescriptor<Bookmark>(
-                predicate: scopePredicate,
-                sortBy: [SortDescriptor(\Bookmark.createdAt, order: .reverse)]
+            descriptor.fetchLimit = limit
+            let rows = (try? modelContext.fetch(descriptor)) ?? []
+            return BookmarkFetchResult(
+                bookmarks: rows,
+                totalFilteredCount: cachedScopeCount(for: selection)
             )
-            let scopedBookmarks = (try? modelContext.fetch(descriptor)) ?? []
-            let filtered = scopedBookmarks.filter { bookmarkMatchesSearch($0, query: q) }
-            totalFilteredCount = filtered.count
-            bookmarks = Array(filtered.prefix(currentFetchLimit))
         }
 
-        columnBookmarksCache = splitIntoColumns(bookmarks: bookmarks, columns: columnCount)
-        selectedBookmarkIDs = selectedBookmarkIDs.intersection(Set(bookmarks.map(\.id)))
+        let descriptor = FetchDescriptor<Bookmark>(
+            predicate: scopePredicate,
+            sortBy: [SortDescriptor(\Bookmark.createdAt, order: .reverse)]
+        )
+        let scopedBookmarks = (try? modelContext.fetch(descriptor)) ?? []
+        let filtered = scopedBookmarks.filter { bookmarkMatchesSearch($0, query: query) }
+        return BookmarkFetchResult(
+            bookmarks: Array(filtered.prefix(limit)),
+            totalFilteredCount: filtered.count
+        )
     }
 
-    private func currentScopePredicate() -> Predicate<Bookmark> {
+    private func cachedScopeCount(for selection: SidebarSelection) -> Int {
+        switch selection {
+        case .all, .recommend:
+            return allBookmarkCount
+        case .category(let id):
+            return categoryBookmarkCounts[id, default: 0]
+        case .uncategorized:
+            return uncategorizedBookmarkCount
+        }
+    }
+
+    private func scopePredicate(for selection: SidebarSelection) -> Predicate<Bookmark> {
         switch selection {
         case .all:
             return #Predicate<Bookmark> { _ in true }
@@ -1209,174 +1496,144 @@ struct ContentView: View {
         return false
     }
 
-    private func recommendationSeed(query: String, cycle: Int) -> Int {
-        let normalized = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        var hash = 2166136261
-        for scalar in normalized.unicodeScalars {
-            hash = (hash ^ Int(scalar.value)) &* 16777619
-        }
-        return (hash ^ (cycle &* 1315423911)) & 0x7fffffff
-    }
-
-    private func recommendationWindowLimit(totalCount: Int, seed: Int) -> Int {
-        guard totalCount > 0 else { return 0 }
-        let base = max(180, min(ContentView.recommendationWindowMax, totalCount / 3 + 120))
-        let jitter = seed % 120
-        return min(totalCount, min(ContentView.recommendationWindowMax, base + jitter))
-    }
-
-    private func recommendationCandidateLimit(windowCount: Int, seed: Int) -> Int {
-        guard windowCount > 0 else { return 0 }
-        let dynamic = 180 + (seed % 90)
-        return min(windowCount, min(ContentView.recommendationCandidateMax, dynamic))
-    }
-
-    private func recommendationSortDescriptors(seed: Int) -> [SortDescriptor<Bookmark>] {
-        switch seed % 4 {
-        case 0:
-            return [SortDescriptor(\Bookmark.updatedAt, order: .reverse)]
-        case 1:
-            return [SortDescriptor(\Bookmark.updatedAt, order: .forward)]
-        case 2:
-            return [SortDescriptor(\Bookmark.createdAt, order: .reverse)]
-        default:
-            return [SortDescriptor(\Bookmark.createdAt, order: .forward)]
-        }
-    }
-
-    private func complementaryRecommendationSortDescriptors(seed: Int) -> [SortDescriptor<Bookmark>] {
-        recommendationSortDescriptors(seed: seed + 2)
-    }
-
-    private func mergeUniqueBookmarks(_ first: [Bookmark], _ second: [Bookmark], limit: Int) -> [Bookmark] {
-        var merged: [Bookmark] = []
-        merged.reserveCapacity(min(limit, first.count + second.count))
-        var seen = Set<UUID>()
-
-        for bm in first where seen.insert(bm.id).inserted {
-            merged.append(bm)
-            if merged.count >= limit { return merged }
-        }
-        for bm in second where seen.insert(bm.id).inserted {
-            merged.append(bm)
-            if merged.count >= limit { return merged }
-        }
-        return merged
-    }
-
     private func refreshRecommendations() {
         recommendationTask?.cancel()
         recommendationTask = nil
 
         let query = recommendationQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        recommendationCycle += 1
-        let cycle = recommendationCycle
         guard !query.isEmpty else {
             isRecommending = false
+            recommendationStage = .idle
+            recommendationProgressText = ""
+            recommendationCompletedBatches = 0
+            recommendationTotalBatches = 0
             recommendationSummary = ""
             recommendedBookmarks = []
             return
         }
 
-        recommendationTask = Task(priority: .userInitiated) {
-            await MainActor.run {
-                isRecommending = true
-                recommendationSummary = ""
-            }
+        let runID = UUID()
+        recommendationRunID = runID
+        recommendationTask = Task(priority: .userInitiated) { @MainActor in
+            isRecommending = true
+            recommendationStage = .localRanking
+            recommendationProgressText = "阶段 1/2：全量初排中..."
+            recommendationCompletedBatches = 0
+            recommendationTotalBatches = 0
+            recommendationSummary = ""
 
-            let totalCount = await MainActor.run {
-                (try? modelContext.fetchCount(FetchDescriptor<Bookmark>())) ?? 0
-            }
-            let seed = recommendationSeed(query: query, cycle: cycle)
-            let dynamicWindowLimit = recommendationWindowLimit(totalCount: totalCount, seed: seed)
-            guard dynamicWindowLimit > 0 else {
-                await MainActor.run {
-                    isRecommending = false
-                    recommendationSummary = "暂无可推荐的数据。"
-                    recommendedBookmarks = []
-                }
+            let descriptor = FetchDescriptor<Bookmark>(
+                sortBy: [SortDescriptor(\Bookmark.updatedAt, order: .reverse)]
+            )
+            let allBookmarks = (try? modelContext.fetch(descriptor)) ?? []
+
+            guard !Task.isCancelled, runID == recommendationRunID else { return }
+            guard !allBookmarks.isEmpty else {
+                isRecommending = false
+                recommendationStage = .idle
+                recommendationProgressText = ""
+                recommendationCompletedBatches = 0
+                recommendationTotalBatches = 0
+                recommendationSummary = "暂无可推荐的数据。"
+                recommendedBookmarks = []
                 return
             }
 
-            var primaryDescriptor = FetchDescriptor<Bookmark>(
-                sortBy: recommendationSortDescriptors(seed: seed)
-            )
-            primaryDescriptor.fetchLimit = dynamicWindowLimit
-            let primary = await MainActor.run { (try? modelContext.fetch(primaryDescriptor)) ?? [] }
+            let snapshots = allBookmarks.map(RecommendationSnapshot.init(bookmark:))
+            let bookmarkByID = Dictionary(uniqueKeysWithValues: allBookmarks.map { ($0.id, $0) })
+            let localRanked = await Task.detached(priority: .userInitiated) {
+                ContentView.fallbackRecommendations(query: query, candidates: snapshots)
+            }.value
 
-            guard !Task.isCancelled else { return }
-            guard !primary.isEmpty else {
-                await MainActor.run {
-                    isRecommending = false
-                    recommendationSummary = "暂无可推荐的数据。"
-                    recommendedBookmarks = []
-                }
-                return
-            }
+            guard !Task.isCancelled, runID == recommendationRunID else { return }
 
-            let secondaryLimit = min(max(120, dynamicWindowLimit / 2), dynamicWindowLimit)
-            var secondaryDescriptor = FetchDescriptor<Bookmark>(
-                sortBy: complementaryRecommendationSortDescriptors(seed: seed)
-            )
-            secondaryDescriptor.fetchLimit = secondaryLimit
-            let secondary = await MainActor.run { (try? modelContext.fetch(secondaryDescriptor)) ?? [] }
+            let limit = recommendationDisplayLimit
+            let localDisplay = resolveSnapshots(localRanked, bookmarkByID: bookmarkByID, limit: limit)
+            recommendedBookmarks = localDisplay
+            recommendationSummary = "已完成全量初排，正在进行 AI 深度分析。"
+            recommendationStage = .aiDeep
+            recommendationProgressText = "阶段 2/2：AI 深度分析中..."
 
-            let candidates = mergeUniqueBookmarks(primary, secondary, limit: ContentView.recommendationWindowMax)
-            let rankedCandidates = fallbackRecommendations(query: query, candidates: candidates)
-            let aiCandidateLimit = recommendationCandidateLimit(windowCount: rankedCandidates.count, seed: seed)
-            let limit = await MainActor.run { recommendationDisplayLimit }
-            let aiInput = Array(rankedCandidates.prefix(max(aiCandidateLimit, limit)))
-            let aiCandidates = aiInput.map { bm in
+            let aiCandidates = localRanked.map { snapshot in
                 AIRecommendationCandidate(
-                    url: bm.url,
-                    title: bm.title,
-                    desc: bm.desc,
-                    notes: bm.notes,
-                    tags: bm.tags,
-                    snippet: bm.snippetText
+                    url: snapshot.url,
+                    title: snapshot.title,
+                    desc: snapshot.desc,
+                    notes: snapshot.notes,
+                    tags: snapshot.tags,
+                    snippet: snapshot.snippet
                 )
             }
 
-            let aiResult = await AIService.shared.recommendBookmarks(
+            let aiResult = await AIService.shared.recommendBookmarksTournament(
                 query: query,
                 candidates: aiCandidates,
-                maxResults: limit
-            )
+                maxResults: limit,
+                chunkSize: 120,
+                shortlistPerChunk: 12,
+                concurrency: 3
+            ) { completed, total in
+                Task { @MainActor in
+                    guard runID == recommendationRunID else { return }
+                    recommendationCompletedBatches = max(0, completed)
+                    recommendationTotalBatches = max(0, total)
+                    recommendationProgressText = "阶段 2/2：AI 深度分析中（\(completed)/\(total)）"
+                }
+            }
 
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, runID == recommendationRunID else { return }
 
-            let urlToBookmark = Dictionary(grouping: aiInput, by: { urlDedupKey($0.url) })
-            var ordered: [Bookmark] = []
+            let snapshotByURLKey = Dictionary(grouping: localRanked, by: { urlDedupKey($0.url) })
+            var finalSnapshots: [RecommendationSnapshot] = []
             var selectedIDs = Set<UUID>()
 
             if let aiResult {
                 for url in aiResult.selectedURLs {
                     let key = urlDedupKey(url)
-                    guard let matched = urlToBookmark[key]?.first else { continue }
+                    guard let matched = snapshotByURLKey[key]?.first else { continue }
                     if selectedIDs.insert(matched.id).inserted {
-                        ordered.append(matched)
+                        finalSnapshots.append(matched)
+                        if finalSnapshots.count >= limit { break }
                     }
                 }
             }
 
-            if ordered.count < limit {
-                for bm in rankedCandidates {
-                    guard selectedIDs.insert(bm.id).inserted else { continue }
-                    ordered.append(bm)
-                    if ordered.count >= limit { break }
+            if finalSnapshots.count < limit {
+                for snapshot in localRanked {
+                    guard selectedIDs.insert(snapshot.id).inserted else { continue }
+                    finalSnapshots.append(snapshot)
+                    if finalSnapshots.count >= limit { break }
                 }
             }
 
-            let summary = aiResult?.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "基于你的查询和历史内容生成推荐。"
-            await MainActor.run {
-                recommendedBookmarks = Array(ordered.prefix(limit))
-                recommendationSummary = summary
-                isRecommending = false
-            }
+            recommendedBookmarks = resolveSnapshots(finalSnapshots, bookmarkByID: bookmarkByID, limit: limit)
+            recommendationSummary = aiResult?.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "已基于全量书签完成推荐。"
+            recommendationCompletedBatches = recommendationTotalBatches
+            recommendationProgressText = "推荐完成"
+            recommendationStage = .done
+            isRecommending = false
         }
     }
 
-    private func fallbackRecommendations(query: String, candidates: [Bookmark]) -> [Bookmark] {
+    private func resolveSnapshots(
+        _ snapshots: [RecommendationSnapshot],
+        bookmarkByID: [UUID: Bookmark],
+        limit: Int
+    ) -> [Bookmark] {
+        var result: [Bookmark] = []
+        result.reserveCapacity(min(limit, snapshots.count))
+        for snapshot in snapshots {
+            guard let bookmark = bookmarkByID[snapshot.id] else { continue }
+            result.append(bookmark)
+            if result.count >= limit { break }
+        }
+        return result
+    }
+
+    nonisolated private static func fallbackRecommendations(
+        query: String,
+        candidates: [RecommendationSnapshot]
+    ) -> [RecommendationSnapshot] {
         let cleanedQuery = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         let tokens = cleanedQuery
             .split { $0 == " " || $0 == "," || $0 == "，" || $0 == "。" || $0 == ";" || $0 == "；" }
@@ -1390,13 +1647,18 @@ struct ContentView: View {
         }
     }
 
-    private func recommendationScore(for bm: Bookmark, query: String, tokens: [String], now: Date) -> Double {
-        let title = bm.title.lowercased()
-        let desc = bm.desc.lowercased()
-        let notes = bm.notes.lowercased()
-        let snippet = bm.snippetText.lowercased()
-        let url = bm.url.lowercased()
-        let tags = bm.tags.map { $0.lowercased() }
+    nonisolated private static func recommendationScore(
+        for snapshot: RecommendationSnapshot,
+        query: String,
+        tokens: [String],
+        now: Date
+    ) -> Double {
+        let title = snapshot.title.lowercased()
+        let desc = snapshot.desc.lowercased()
+        let notes = snapshot.notes.lowercased()
+        let snippet = snapshot.snippet.lowercased()
+        let url = snapshot.url.lowercased()
+        let tags = snapshot.tags.map { $0.lowercased() }
 
         var score = 0.0
         if !query.isEmpty {
@@ -1416,8 +1678,8 @@ struct ContentView: View {
             if tags.contains(where: { $0.contains(token) }) { score += 2.5 }
         }
 
-        if bm.isFavorite { score += 1.8 }
-        let recencyDays = max(0, now.timeIntervalSince(bm.updatedAt) / 86_400)
+        if snapshot.isFavorite { score += 1.8 }
+        let recencyDays = max(0, now.timeIntervalSince(snapshot.updatedAt) / 86_400)
         score += max(0, 2.2 - min(recencyDays / 10, 2.2))
         return score
     }
