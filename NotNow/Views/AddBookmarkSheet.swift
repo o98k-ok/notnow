@@ -38,6 +38,10 @@ struct AddBookmarkSheet: View {
     @State private var apiParamRows: [APIKeyValueRow] = [APIKeyValueRow(key: "", value: "")]
     @State private var apiBody = ""
     @State private var apiBodyType = "json"
+    @State private var showImportCurlSheet = false
+    @State private var importCurlText = ""
+    @State private var showImportCurlError = false
+    @State private var importCurlErrorMessage = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -292,7 +296,25 @@ struct AddBookmarkSheet: View {
                     if kind == .api {
                         // URL
                         VStack(alignment: .leading, spacing: 6) {
-                            fieldLabel("请求地址")
+                            HStack {
+                                fieldLabel("请求地址")
+                                Spacer()
+                                Button {
+                                    showImportCurlSheet = true
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "square.and.arrow.down")
+                                        Text("导入 cURL")
+                                            .font(.subheadline.weight(.medium))
+                                    }
+                                    .foregroundStyle(AppTheme.accent)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(AppTheme.accent.opacity(0.15))
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                }
+                                .buttonStyle(.plain)
+                            }
                             HStack(spacing: 8) {
                                 Picker("", selection: $apiMethod) {
                                     ForEach(HTTPMethod.allCases, id: \.self) { m in
@@ -538,6 +560,55 @@ struct AddBookmarkSheet: View {
         .onDisappear {
             metadataTask?.cancel()
             coverTask?.cancel()
+        }
+        .sheet(isPresented: $showImportCurlSheet) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("导入 cURL")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Spacer()
+                }
+
+                Text("粘贴完整 cURL 命令，导入后会覆盖当前 API 字段。")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textSecondary)
+
+                TextEditor(text: $importCurlText)
+                    .font(.system(.subheadline, design: .monospaced))
+                    .scrollContentBackground(.hidden)
+                    .padding(10)
+                    .frame(minHeight: 180)
+                    .background(AppTheme.bgInput)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                    )
+
+                HStack {
+                    Spacer()
+                    Button("取消") {
+                        showImportCurlSheet = false
+                    }
+                    .buttonStyle(.plain)
+
+                    Button("导入") {
+                        importFromCurlText()
+                    }
+                    .accentButtonStyle()
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(18)
+            .frame(minWidth: 560, minHeight: 320)
+            .background(AppTheme.bgPrimary)
+        }
+        .alert("导入 cURL 失败", isPresented: $showImportCurlError) {
+            Button("确定", role: .cancel) {}
+        } message: {
+            Text(importCurlErrorMessage)
         }
     }
 
@@ -897,6 +968,39 @@ struct AddBookmarkSheet: View {
         } else if let formatted = APIService.formatJSON(apiBody) {
             apiBody = formatted
         }
+    }
+
+    private func importFromCurlText() {
+        let trimmed = importCurlText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            importCurlErrorMessage = "请先粘贴 cURL 命令。"
+            showImportCurlError = true
+            return
+        }
+        guard let parsed = APIService.parseCURL(trimmed) else {
+            importCurlErrorMessage = "无法解析 cURL，请检查格式（需包含 URL）。"
+            showImportCurlError = true
+            return
+        }
+
+        applyParsedCurlRequest(parsed)
+        showImportCurlSheet = false
+        importCurlText = ""
+    }
+
+    private func applyParsedCurlRequest(_ parsed: APIService.ParsedCURLRequest) {
+        let resolvedMethod = HTTPMethod(rawValue: parsed.method.uppercased()) ?? .GET
+        apiMethod = resolvedMethod
+        url = parsed.url
+
+        let headerRows = parsed.headers.map { APIKeyValueRow(key: $0.key, value: $0.value) }
+        apiHeaderRows = headerRows.isEmpty ? [APIKeyValueRow(key: "", value: "")] : headerRows
+
+        let queryRows = parsed.queryParams.map { APIKeyValueRow(key: $0.key, value: $0.value) }
+        apiParamRows = queryRows.isEmpty ? [APIKeyValueRow(key: "", value: "")] : queryRows
+
+        apiBodyType = parsed.bodyType
+        apiBody = parsed.body ?? ""
     }
 
     private var saveButtonDisabled: Bool {

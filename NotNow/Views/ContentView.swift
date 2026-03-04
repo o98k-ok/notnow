@@ -14,6 +14,7 @@ struct ContentView: View {
     @Query(sort: \Category.sortOrder) private var categories: [Category]
 
     @AppStorage("accentTheme") private var accentThemeName = "dark"
+    @AppStorage("sidebar.pinnedCategoryIDs") private var pinnedCategoryIDsRaw = ""
     @State private var selection: SidebarSelection = .recommend
     /// 已生效的搜索词（用于查询）
     @State private var searchText = ""
@@ -66,6 +67,26 @@ struct ContentView: View {
 
     private var currentTheme: AccentTheme {
         AccentTheme(rawValue: accentThemeName) ?? .dark
+    }
+
+    private var pinnedCategoryIDs: Set<UUID> {
+        Set(
+            pinnedCategoryIDsRaw
+                .split(separator: ",")
+                .compactMap { UUID(uuidString: String($0)) }
+        )
+    }
+
+    private var orderedCategories: [Category] {
+        let pinned = pinnedCategoryIDs
+        return categories.sorted { lhs, rhs in
+            let lhsPinned = pinned.contains(lhs.id)
+            let rhsPinned = pinned.contains(rhs.id)
+            if lhsPinned != rhsPinned { return lhsPinned && !rhsPinned }
+            if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+            if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
     }
 
     var body: some View {
@@ -131,9 +152,13 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .focusSearch)) { _ in
             searchFocusRequest += 1
         }
+        .onReceive(NotificationCenter.default.publisher(for: .modelDataDidChange)) { _ in
+            refreshAll()
+        }
         .onAppear {
             NSLog("[NotNow] app appeared")
             ensureFavoriteCategoryExists()
+            cleanupPinnedCategoryIDs()
             refreshAll()
         }
         .onChange(of: showCategorySheet) {
@@ -258,22 +283,35 @@ struct ContentView: View {
             // Category list
             ScrollView {
                 VStack(spacing: 2) {
-                    ForEach(categories) { cat in
+                    ForEach(orderedCategories) { cat in
                         let catCount = categoryBookmarkCounts[cat.id] ?? 0
                         sidebarItem(
                             label: cat.name, icon: cat.icon,
                             isActive: selection == .category(cat.id),
                             count: catCount,
-                            accentColor: cat.color
+                            accentColor: cat.color,
+                            isPinned: pinnedCategoryIDs.contains(cat.id)
                         ) { selection = .category(cat.id) }
                             .contextMenu {
+                                Button(pinnedCategoryIDs.contains(cat.id) ? "取消置顶" : "置顶") {
+                                    toggleCategoryPin(cat)
+                                }
+                                Divider()
                                 Button("编辑") {
                                     editingCategory = cat
                                     showCategorySheet = true
                                 }
                                 Button("删除", role: .destructive) {
                                     if selection == .category(cat.id) { selection = .all }
+                                    let catID = cat.id
+                                    let desc = FetchDescriptor<Bookmark>(predicate: #Predicate<Bookmark> { $0.category?.id == catID })
+                                    if let affected = try? modelContext.fetch(desc) {
+                                        for bm in affected { bm.category = nil }
+                                    }
                                     modelContext.delete(cat)
+                                    clearPinnedCategory(cat.id)
+                                    try? modelContext.save()
+                                    refreshAll()
                                 }
                             }
                     }
@@ -302,7 +340,7 @@ struct ContentView: View {
 
     private func sidebarItem(
         label: String, icon: String, isActive: Bool,
-        count: Int? = nil, accentColor: Color,
+        count: Int? = nil, accentColor: Color, isPinned: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -314,6 +352,11 @@ struct ContentView: View {
                 Text(label)
                     .font(.subheadline.weight(isActive ? .semibold : .regular))
                     .foregroundStyle(isActive ? AppTheme.textPrimary : AppTheme.textSecondary)
+                if isPinned {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(AppTheme.textTertiary)
+                }
                 Spacer()
                 if let count {
                     Text("\(count)")
@@ -419,7 +462,7 @@ struct ContentView: View {
                         Button("移到未分类") { moveSelected(to: nil) }
                         if !categories.isEmpty {
                             Divider()
-                            ForEach(categories) { cat in
+                            ForEach(orderedCategories) { cat in
                                 Button(cat.name) { moveSelected(to: cat) }
                             }
                         }
@@ -830,10 +873,10 @@ struct ContentView: View {
         Divider()
         if !categories.isEmpty {
             Menu("移动到分类") {
-                Button("无分类") { bm.category = nil; bm.updatedAt = Date() }
+                Button("无分类") { moveBookmark(bm, to: nil) }
                 Divider()
-                ForEach(categories) { cat in
-                    Button(cat.name) { bm.category = cat; bm.updatedAt = Date() }
+                ForEach(orderedCategories) { cat in
+                    Button(cat.name) { moveBookmark(bm, to: cat) }
                 }
             }
         }
@@ -851,8 +894,7 @@ struct ContentView: View {
         Button("编辑") { selectedBookmark = bm }
         Divider()
         Button("删除", role: .destructive) {
-            modelContext.delete(bm)
-            refreshAll()
+            deleteBookmark(bm)
         }
     }
 
@@ -996,6 +1038,47 @@ struct ContentView: View {
         try? modelContext.save()
     }
 
+    private func savePinnedCategoryIDs(_ ids: Set<UUID>) {
+        pinnedCategoryIDsRaw = ids.map(\.uuidString).sorted().joined(separator: ",")
+    }
+
+    private func clearPinnedCategory(_ id: UUID) {
+        var ids = pinnedCategoryIDs
+        guard ids.remove(id) != nil else { return }
+        savePinnedCategoryIDs(ids)
+    }
+
+    private func toggleCategoryPin(_ category: Category) {
+        var ids = pinnedCategoryIDs
+        if ids.contains(category.id) {
+            ids.remove(category.id)
+        } else {
+            ids.insert(category.id)
+        }
+        savePinnedCategoryIDs(ids)
+    }
+
+    private func cleanupPinnedCategoryIDs() {
+        let validIDs = Set(categories.map(\.id))
+        let cleaned = pinnedCategoryIDs.intersection(validIDs)
+        if cleaned != pinnedCategoryIDs {
+            savePinnedCategoryIDs(cleaned)
+        }
+    }
+
+    private func moveBookmark(_ bookmark: Bookmark, to category: Category?) {
+        bookmark.category = category
+        bookmark.updatedAt = Date()
+        try? modelContext.save()
+        refreshAll()
+    }
+
+    private func deleteBookmark(_ bookmark: Bookmark) {
+        modelContext.delete(bookmark)
+        try? modelContext.save()
+        refreshAll()
+    }
+
     private func retagSelected() {
         guard !selectedBookmarkIDs.isEmpty else { return }
         guard !isBatchRetagging else { return }
@@ -1030,13 +1113,14 @@ struct ContentView: View {
                 try? modelContext.save()
                 isBatchRetagging = false
                 batchRetagProgressText = ""
-                importAlertMessage = "批量重打标完成：共处理 \(stats.total) 条（Snippet: \(stats.snippets), Task: \(stats.tasks), 普通链接: \(stats.normalLinks), Twitter: \(stats.twitterLinks), 跳过: \(stats.skipped)）"
+                importAlertMessage = "批量重打标完成：共处理 \(stats.total) 条（Snippet: \(stats.snippets), Task: \(stats.tasks), API: \(stats.apis), 普通链接: \(stats.normalLinks), Twitter: \(stats.twitterLinks), 跳过: \(stats.skipped)）"
                 showImportAlert = true
             }
         }
     }
 
     private func refreshAll() {
+        cleanupPinnedCategoryIDs()
         fetchSidebarCounts()
         if selection == .recommend {
             if !didRunInitialRecommendation {
@@ -1049,18 +1133,23 @@ struct ContentView: View {
     }
 
     private func fetchSidebarCounts() {
-        allBookmarkCount = (try? modelContext.fetchCount(FetchDescriptor<Bookmark>())) ?? 0
+        let all = (try? modelContext.fetch(FetchDescriptor<Bookmark>())) ?? []
+        var counts = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, 0) })
+        var uncategorized = 0
 
-        var counts: [UUID: Int] = [:]
-        for cat in categories {
-            let catID = cat.id
-            let desc = FetchDescriptor<Bookmark>(predicate: #Predicate<Bookmark> { $0.category?.id == catID })
-            counts[catID] = (try? modelContext.fetchCount(desc)) ?? 0
+        for bm in all {
+            if let categoryID = bm.category?.id {
+                counts[categoryID, default: 0] += 1
+            } else {
+                uncategorized += 1
+            }
         }
-        categoryBookmarkCounts = counts
 
-        let uncatDesc = FetchDescriptor<Bookmark>(predicate: #Predicate<Bookmark> { $0.category == nil })
-        uncategorizedBookmarkCount = (try? modelContext.fetchCount(uncatDesc)) ?? 0
+        withAnimation(.easeOut(duration: 0.16)) {
+            allBookmarkCount = all.count
+            categoryBookmarkCounts = counts
+            uncategorizedBookmarkCount = uncategorized
+        }
     }
 
     private func fetchBookmarks() {
@@ -1407,6 +1496,9 @@ struct ContentView: View {
         } else if bm.isTask {
             await retagTaskBookmark(bm)
             stats.tasks += 1
+        } else if bm.isAPI {
+            await retagAPIBookmark(bm)
+            stats.apis += 1
         } else if isTwitterURL(bm.url) {
             if canProcessTwitter {
                 await retagTwitterBookmark(bm)
@@ -1430,6 +1522,37 @@ struct ContentView: View {
             content: content,
             originalTitle: await MainActor.run { bm.title },
             originalDesc: await MainActor.run { bm.desc }
+        ) {
+            await MainActor.run {
+                if let t = ai.title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+                    bm.title = t
+                }
+                if let d = ai.desc?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty {
+                    bm.desc = d
+                }
+                if let tagList = ai.tags {
+                    bm.tags = normalizedTags(tagList)
+                }
+                bm.updatedAt = Date()
+            }
+        } else {
+            await MainActor.run { bm.updatedAt = Date() }
+        }
+    }
+
+    private func retagAPIBookmark(_ bm: Bookmark) async {
+        let url = await MainActor.run { bm.url }
+        let method = await MainActor.run { bm.apiMethod ?? "GET" }
+        let bodySnippet = await MainActor.run { bm.apiBody }
+        let originalTitle = await MainActor.run { bm.title }
+        let originalDesc = await MainActor.run { bm.desc }
+
+        if let ai = await AIService.shared.refineAPI(
+            url: url,
+            method: method,
+            bodySnippet: bodySnippet,
+            originalTitle: originalTitle,
+            originalDesc: originalDesc
         ) {
             await MainActor.run {
                 if let t = ai.title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
@@ -1593,6 +1716,7 @@ struct ContentView: View {
                     case .success(let stats):
                         importAlertMessage = "已恢复 \(stats.bookmarksCreated) 条书签、\(stats.categoriesCreated) 个分类。\(stats.configRestored ? "配置已恢复。" : "")"
                         showImportAlert = true
+                        refreshAll()
                     case .failure(let err):
                         let msg: String
                         if case .readFailed(let s) = err { msg = s }
@@ -1748,6 +1872,7 @@ struct ContentView: View {
                 }
                 showImportAlert = true
                 isImporting = false
+                refreshAll()
 
                 Task {
                     await enrichImportedBookmarks(importedItems, source: source)
@@ -2024,6 +2149,7 @@ private struct BatchRetagStats {
     var total: Int
     var snippets: Int = 0
     var tasks: Int = 0
+    var apis: Int = 0
     var normalLinks: Int = 0
     var twitterLinks: Int = 0
     var skipped: Int = 0
