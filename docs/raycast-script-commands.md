@@ -6,6 +6,7 @@
 
 - `NotNow Search`：按关键词搜索 NotNow 数据，返回 JSON，不会打开页面。
 - `NotNow Open`：按 target 精确打开。只有唯一命中才打开；歧义时仅返回候选，不执行打开。
+- `NotNow Export ZIP`：导出与 GUI“导出数据与配置”一致结构的备份 zip（书签、分类、封面、配置）。
 
 兼容 NeoShell：
 - `notnow_search.sh` 已包含 `@ai-shell` 元数据与 `@output list` 声明。
@@ -15,6 +16,7 @@
 
 - macOS 已安装 Raycast
 - 系统有 `sqlite3`（macOS 默认自带）
+- 系统可运行 `swift`（Xcode Command Line Tools 或 Xcode）
 - NotNow 已经运行过，存在默认数据库：
   - `~/Library/Application Support/default.store`
 
@@ -22,6 +24,12 @@
 
 ```bash
 export NOTNOW_STORE_PATH="/your/custom/path/default.store"
+```
+
+如需指定读取哪个应用 defaults 域（默认 `com.notnow.app`）：
+
+```bash
+export NOTNOW_BUNDLE_ID="com.notnow.app"
 ```
 
 ## 3) 安装脚本命令
@@ -34,7 +42,8 @@ export NOTNOW_STORE_PATH="/your/custom/path/default.store"
 mkdir -p "$HOME/.config/raycast/scripts"
 ln -sf "/Users/shadow/Documents/code/notnow/scripts/raycast/notnow_search.sh" "$HOME/.config/raycast/scripts/notnow_search.sh"
 ln -sf "/Users/shadow/Documents/code/notnow/scripts/raycast/notnow_open.sh" "$HOME/.config/raycast/scripts/notnow_open.sh"
-chmod +x "$HOME/.config/raycast/scripts/notnow_search.sh" "$HOME/.config/raycast/scripts/notnow_open.sh"
+ln -sf "/Users/shadow/Documents/code/notnow/scripts/raycast/notnow_export_zip.swift" "$HOME/.config/raycast/scripts/notnow_export_zip.swift"
+chmod +x "$HOME/.config/raycast/scripts/notnow_search.sh" "$HOME/.config/raycast/scripts/notnow_open.sh" "$HOME/.config/raycast/scripts/notnow_export_zip.swift"
 ```
 
 3. 在 Raycast 中刷新 Script Commands（或重启 Raycast）。
@@ -93,6 +102,26 @@ NotNow Open "hapi" auto
 
 只有唯一命中才会执行 `open`。如果命中多条，会输出候选（含 `id`）并提示你用 `id` 再执行一次。
 
+### Export ZIP（导出备份）
+
+在 Raycast 输入 `NotNow Export ZIP`，参数：
+
+- `output path or directory`：可选。可传目录或 `.zip` 文件路径。
+
+行为：
+
+1. 不传参数时默认导出到 `~/Downloads/NotNow-backup-YYYY-MM-DD.zip`
+2. 传目录时导出到该目录，文件名自动按 GUI 规则生成
+3. 传 `.zip` 文件路径时导出到该目标文件
+
+导出包内容与 GUI 一致：
+
+- `manifest.json`
+- `categories.json`
+- `bookmarks.json`
+- `config.json`
+- `covers/<bookmark-id>`
+
 ## 5) 排序规则（简化）
 
 匹配字段：`title`、`url`、`desc`、`notes`、`snippetContent`  
@@ -111,3 +140,6 @@ NotNow Open "hapi" auto
 3. Raycast 里看不到命令
 - 检查脚本目录是否为 Raycast 当前配置目录
 - 确认脚本可执行：`chmod +x <script>`
+
+4. Export 提示读不到配置
+- 检查 `NOTNOW_BUNDLE_ID`（默认 `com.notnow.app`）是否与你本机安装版本一致
