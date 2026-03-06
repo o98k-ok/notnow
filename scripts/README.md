@@ -50,3 +50,14 @@ ACTIONBOOK_BIN='/Users/shadow/.nvm/versions/node/v20.20.0/bin/actionbook' \
 - 首条 article 文本预览
 - og:description / og:image
 - 状态链接与媒体链接样本
+
+## Raycast Script Commands（NotNow 读取）
+
+新增脚本目录：
+
+- `scripts/raycast/notnow_search.sh`
+- `scripts/raycast/notnow_open.sh`
+
+详细接入与使用说明见：
+
+- `docs/raycast-script-commands.md`

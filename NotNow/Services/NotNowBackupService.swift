@@ -55,7 +55,7 @@ struct NotNowExportBookmark: Encodable {
     let apiQueryParams: String?
 }
 
-struct NotNowExportAppConfig: Codable {
+struct NotNowExportAppConfig: Codable, Sendable {
     let accentTheme: String
     let aiEnabled: Bool
     let aiAPIURL: String
@@ -65,7 +65,7 @@ struct NotNowExportAppConfig: Codable {
 
 // MARK: - Import
 
-struct NotNowImportCategory: Decodable {
+struct NotNowImportCategory: Decodable, Sendable {
     let id: String
     let name: String
     let icon: String
@@ -74,7 +74,7 @@ struct NotNowImportCategory: Decodable {
     let createdAt: Date
 }
 
-struct NotNowImportBookmark: Decodable {
+struct NotNowImportBookmark: Decodable, Sendable {
     let id: String
     let url: String
     let title: String
@@ -103,13 +103,13 @@ struct NotNowImportBookmark: Decodable {
     let apiQueryParams: String?
 }
 
-struct NotNowImportStats {
+struct NotNowImportStats: Sendable {
     var categoriesCreated: Int
     var bookmarksCreated: Int
     var configRestored: Bool
 }
 
-enum NotNowBackupError: Error {
+enum NotNowBackupError: Error, Sendable {
     case invalidZip
     case missingManifest
     case missingCategories
@@ -121,6 +121,13 @@ enum NotNowBackupError: Error {
 // MARK: - Service
 
 enum NotNowBackupService {
+    private struct PreparedImportPayload: Sendable {
+        let categories: [NotNowImportCategory]
+        let bookmarks: [NotNowImportBookmark]
+        let config: NotNowExportAppConfig?
+        let coverDataByBookmarkID: [String: Data]
+    }
+
     private static let manifestFileName = "manifest.json"
     private static let categoriesFileName = "categories.json"
     private static let bookmarksFileName = "bookmarks.json"
@@ -270,7 +277,7 @@ enum NotNowBackupService {
 
     // MARK: Import
 
-    static func `import`(from zipURL: URL, into modelContext: ModelContext) async -> Result<NotNowImportStats, NotNowBackupError> {
+    private static func prepareImportPayload(from zipURL: URL) -> Result<PreparedImportPayload, NotNowBackupError> {
         let fm = FileManager.default
         let unzipDir = fm.temporaryDirectory
             .appendingPathComponent("NotNowImport-\(UUID().uuidString)", isDirectory: true)
@@ -326,8 +333,49 @@ enum NotNowBackupService {
             return .failure(.readFailed("解析 JSON 失败：\(error.localizedDescription)"))
         }
 
+        let config: NotNowExportAppConfig?
+        if fm.fileExists(atPath: configURL.path),
+           let configData = try? Data(contentsOf: configURL),
+           let decoded = try? decoder.decode(NotNowExportAppConfig.self, from: configData) {
+            config = decoded
+        } else {
+            config = nil
+        }
+
+        var coverDataByBookmarkID: [String: Data] = [:]
+        if fm.fileExists(atPath: coversDir.path) {
+            for b in importBms {
+                let coverPath = coversDir.appendingPathComponent(b.id).path
+                if fm.fileExists(atPath: coverPath),
+                   let coverData = try? Data(contentsOf: URL(fileURLWithPath: coverPath)) {
+                    coverDataByBookmarkID[b.id] = coverData
+                }
+            }
+        }
+
+        return .success(PreparedImportPayload(
+            categories: importCats,
+            bookmarks: importBms,
+            config: config,
+            coverDataByBookmarkID: coverDataByBookmarkID
+        ))
+    }
+
+    @MainActor
+    static func `import`(from zipURL: URL, into modelContext: ModelContext) async -> Result<NotNowImportStats, NotNowBackupError> {
+        let payloadResult = await Task.detached(priority: .userInitiated) {
+            NotNowBackupService.prepareImportPayload(from: zipURL)
+        }.value
+
+        guard case .success(let payload) = payloadResult else {
+            if case .failure(let error) = payloadResult {
+                return .failure(error)
+            }
+            return .failure(.readFailed("导入失败：未知错误"))
+        }
+
         var oldCategoryIdToNew: [String: Category] = [:]
-        for c in importCats {
+        for c in payload.categories {
             let newCat = Category(
                 name: c.name,
                 icon: c.icon,
@@ -339,7 +387,7 @@ enum NotNowBackupService {
             oldCategoryIdToNew[c.id] = newCat
         }
 
-        for b in importBms {
+        for b in payload.bookmarks {
             let cat = b.categoryId.flatMap { oldCategoryIdToNew[$0] }
             let bm = Bookmark(
                 url: b.url,
@@ -371,16 +419,13 @@ enum NotNowBackupService {
             bm.apiQueryParams = b.apiQueryParams
             modelContext.insert(bm)
 
-            let coverPath = coversDir.appendingPathComponent(b.id).path
-            if fm.fileExists(atPath: coverPath), let coverData = try? Data(contentsOf: URL(fileURLWithPath: coverPath)) {
+            if let coverData = payload.coverDataByBookmarkID[b.id] {
                 bm.coverData = coverData
             }
         }
 
         var configRestored = false
-        if fm.fileExists(atPath: configURL.path),
-           let configData = try? Data(contentsOf: configURL),
-           let config = try? decoder.decode(NotNowExportAppConfig.self, from: configData) {
+        if let config = payload.config {
             UserDefaults.standard.set(config.accentTheme, forKey: "accentTheme")
             UserDefaults.standard.set(config.aiEnabled, forKey: "ai.enabled")
             UserDefaults.standard.set(config.aiAPIURL, forKey: "ai.apiURL")
@@ -396,8 +441,8 @@ enum NotNowBackupService {
         }
 
         return .success(NotNowImportStats(
-            categoriesCreated: importCats.count,
-            bookmarksCreated: importBms.count,
+            categoriesCreated: payload.categories.count,
+            bookmarksCreated: payload.bookmarks.count,
             configRestored: configRestored
         ))
     }
