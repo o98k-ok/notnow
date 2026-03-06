@@ -23,3 +23,4 @@
 | 2026-03-06 | 11:35 | working-tree | `./build.sh` | success | NotNow Search 脚本新增 NeoShell list 输出（items[] + output_mode=list），兼容原 results 字段；构建通过，仅保留既有 ModelContext sendable 警告 |
 | 2026-03-06 | 11:45 | working-tree | `./build.sh` | success | 修复导入流程的 ModelContext sendable 告警：导入解析放入 detached 任务，SwiftData 写入保持 MainActor。 |
 | 2026-03-06 | 12:02 | working-tree | ./build.sh | success | Search 列表输出改为纯列表：移除 detail 与冗余字段，仅保留关键信息。 |
+| 2026-03-06 | 22:29 | working-tree | `./build.sh` | success | `notnow_search.sh` 按卡片类型输出业务字段：移除 `items/output_mode/store`，保留 `query/total/limit/results`，并按 `link/snippet/task/api` 返回对应字段。 |
