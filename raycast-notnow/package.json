@@ -3,7 +3,7 @@
   "name": "notnow-url-search",
   "title": "NotNow URL Search",
   "description": "Independent NotNow Raycast extension with URL-first grouped search and highlighted tags.",
-  "icon": "assets/notnow.png",
+  "icon": "notnow.png",
   "author": "shadow",
   "categories": [
     "Productivity",
@@ -17,7 +17,7 @@
       "subtitle": "Grouped, URL-first",
       "description": "Search NotNow data by URL only, grouped by kind, prioritizing non-x.com results.",
       "mode": "view",
-      "icon": "assets/notnow.png",
+      "icon": "notnow.png",
       "preferences": [
         {
           "name": "storePath",
@@ -41,6 +41,7 @@
           "type": "checkbox",
           "required": false,
           "title": "Include x.com Results",
+          "description": "Whether to include x.com links in search results (kept lower priority)",
           "label": "Show x.com links (kept lower priority)",
           "default": true
         }
@@ -60,7 +61,7 @@
   "devDependencies": {
     "@raycast/eslint-config": "^1.0.11",
     "@types/node": "^22.10.2",
-    "@types/react": "^18.3.12",
+    "@types/react": "^19.2.14",
     "eslint": "^9.16.0",
     "prettier": "^3.4.2",
     "typescript": "^5.7.2"

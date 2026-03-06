@@ -269,6 +269,14 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .showSettings)) { _ in
             showSettings = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openBookmarkByID)) { notification in
+            guard let targetID = notification.userInfo?["id"] as? UUID else { return }
+            var descriptor = FetchDescriptor<Bookmark>(predicate: #Predicate { $0.id == targetID })
+            descriptor.fetchLimit = 1
+            if let bookmark = try? modelContext.fetch(descriptor).first {
+                selectedBookmark = bookmark
+            }
+        }
     }
 
     // MARK: - Sidebar

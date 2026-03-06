@@ -1,3 +1,4 @@
+import AppKit
 import SQLite3
 import SwiftData
 import SwiftUI
@@ -22,9 +23,21 @@ struct NotNowApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        Window("NotNow", id: "main") {
             ContentView()
                 .preferredColorScheme(AppTheme.colorScheme)
+                .onOpenURL { url in
+                    guard url.scheme == "notnow", url.host == "edit" else { return }
+                    let path = url.pathComponents
+                    guard path.count >= 2, let uuid = UUID(uuidString: path[1]) else { return }
+                    NSApp.activate(ignoringOtherApps: true)
+                    DispatchQueue.main.async {
+                        NSApp.windows.first?.makeKeyAndOrderFront(nil)
+                        NotificationCenter.default.post(
+                            name: .openBookmarkByID, object: nil,
+                            userInfo: ["id": uuid])
+                    }
+                }
         }
         .modelContainer(for: [Bookmark.self, Category.self])
         .defaultSize(width: 1100, height: 750)
@@ -67,4 +80,5 @@ extension Notification.Name {
     static let showSettings = Notification.Name("showSettings")
     static let openCommandPalette = Notification.Name("openCommandPalette")
     static let modelDataDidChange = Notification.Name("modelDataDidChange")
+    static let openBookmarkByID = Notification.Name("openBookmarkByID")
 }

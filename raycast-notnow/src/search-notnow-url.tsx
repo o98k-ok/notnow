@@ -67,7 +67,10 @@ type Preferences = {
 
 const KIND_ORDER: BookmarkKind[] = ["link", "snippet", "task", "api"];
 
-const KIND_META: Record<BookmarkKind, { title: string; icon: Icon; color: Color }> = {
+const KIND_META: Record<
+  BookmarkKind,
+  { title: string; icon: Icon; color: Color }
+> = {
   link: { title: "Links", icon: Icon.Link, color: Color.Blue },
   snippet: { title: "Snippets", icon: Icon.Code, color: Color.Purple },
   task: { title: "Tasks", icon: Icon.CheckCircle, color: Color.Orange },
@@ -133,13 +136,20 @@ const tagDecodeCache = new Map<string, string[]>();
 export default function Command() {
   const preferences = getPreferenceValues<Preferences>();
   const [searchText, setSearchText] = useState("");
+  const [kindFilter, setKindFilter] = useState<string>("link");
   const [isLoading, setIsLoading] = useState(true);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [errorText, setErrorText] = useState<string>("");
   const requestSerial = useRef(0);
 
-  const resolvedStorePath = useMemo(() => expandPath(preferences.storePath?.trim() || DEFAULT_STORE_PATH), [preferences.storePath]);
-  const maxResults = useMemo(() => normalizeMaxResults(preferences.maxResults), [preferences.maxResults]);
+  const resolvedStorePath = useMemo(
+    () => expandPath(preferences.storePath?.trim() || DEFAULT_STORE_PATH),
+    [preferences.storePath],
+  );
+  const maxResults = useMemo(
+    () => normalizeMaxResults(preferences.maxResults),
+    [preferences.maxResults],
+  );
   const showXDomain = preferences.showXDomain ?? true;
 
   useEffect(() => {
@@ -148,7 +158,7 @@ export default function Command() {
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchText, resolvedStorePath, maxResults, showXDomain]);
+  }, [searchText, kindFilter, resolvedStorePath, maxResults, showXDomain]);
 
   async function load() {
     const serial = ++requestSerial.current;
@@ -162,7 +172,26 @@ export default function Command() {
         fetchLimit: Math.min(MAX_FETCH_LIMIT, Math.max(maxResults * 4, 200)),
       });
       const hydrated = await hydrateResults(sqlRows);
-      const sorted = sortAndFilter(hydrated, showXDomain).slice(0, maxResults);
+      const query = searchText.trim().toLowerCase();
+      const kindFiltered =
+        kindFilter !== "all"
+          ? hydrated.filter((r) => r.kind === kindFilter)
+          : hydrated;
+      const textFiltered = query
+        ? kindFiltered.filter(
+            (r) =>
+              r.url.toLowerCase().includes(query) ||
+              r.title.toLowerCase().includes(query) ||
+              r.desc.toLowerCase().includes(query) ||
+              r.kind.toLowerCase().includes(query) ||
+              r.category.toLowerCase().includes(query) ||
+              r.tags.some((t) => t.toLowerCase().includes(query)),
+          )
+        : kindFiltered;
+      const sorted = sortAndFilter(textFiltered, showXDomain).slice(
+        0,
+        maxResults,
+      );
 
       if (serial !== requestSerial.current) return;
       setResults(sorted);
@@ -199,32 +228,74 @@ export default function Command() {
   return (
     <List
       isLoading={isLoading}
-      isShowingDetail
       filtering={false}
       throttle
       onSearchTextChange={setSearchText}
-      searchBarPlaceholder="URL-only search (non-x.com first)"
+      searchBarPlaceholder="Search by name, URL, desc, tags..."
+      searchBarAccessory={
+        <List.Dropdown
+          tooltip="Filter by Kind"
+          value={kindFilter}
+          onChange={setKindFilter}
+        >
+          <List.Dropdown.Item
+            title="All"
+            value="all"
+            icon={Icon.AppWindowGrid3x3}
+          />
+          <List.Dropdown.Item
+            title="Links"
+            value="link"
+            icon={KIND_META.link.icon}
+          />
+          <List.Dropdown.Item
+            title="Snippets"
+            value="snippet"
+            icon={KIND_META.snippet.icon}
+          />
+          <List.Dropdown.Item
+            title="Tasks"
+            value="task"
+            icon={KIND_META.task.icon}
+          />
+          <List.Dropdown.Item
+            title="APIs"
+            value="api"
+            icon={KIND_META.api.icon}
+          />
+        </List.Dropdown>
+      }
     >
       {!isLoading && errorText ? (
-        <List.EmptyView title="Search Error" description={errorText} icon={Icon.ExclamationMark} />
+        <List.EmptyView
+          title="Search Error"
+          description={errorText}
+          icon={Icon.ExclamationMark}
+        />
       ) : null}
       {!isLoading && !errorText && sections.length === 0 ? (
         <List.EmptyView
-          title="No URL Results"
-          description="Try another keyword. This extension only matches URL fields."
+          title="No Results"
+          description="Try another keyword or switch the kind filter."
           icon={Icon.MagnifyingGlass}
         />
       ) : null}
       {sections.map((section) => (
-        <List.Section key={section.kind} title={section.title} subtitle={String(section.items.length)}>
+        <List.Section
+          key={section.kind}
+          title={section.title}
+          subtitle={String(section.items.length)}
+        >
           {section.items.map((item) => (
             <List.Item
               key={item.id}
-              icon={{ source: KIND_META[item.kind].icon, tintColor: KIND_META[item.kind].color }}
+              icon={{
+                source: KIND_META[item.kind].icon,
+                tintColor: KIND_META[item.kind].color,
+              }}
               title={item.title || "(untitled)"}
               subtitle={item.url}
               accessories={buildAccessories(item)}
-              detail={<BookmarkDetail item={item} />}
               actions={<BookmarkActions item={item} />}
             />
           ))}
@@ -236,48 +307,114 @@ export default function Command() {
 
 function BookmarkActions({ item }: { item: SearchResult }) {
   const isHttpUrl = /^https?:\/\//i.test(item.url);
+  const editTargetId = resolveEditTargetId(item);
+  const editInNotNow =
+    item.kind !== "link" ? (
+      <Action
+        title="Edit in NotNow"
+        icon={Icon.Pencil}
+        autoFocus
+        onAction={() => {
+          if (editTargetId) {
+            open(`notnow://edit/${editTargetId}`);
+          }
+        }}
+      />
+    ) : null;
   return (
     <ActionPanel>
-      {isHttpUrl ? <Action.OpenInBrowser url={item.url} title="Open URL" /> : <Action title="Open URL" icon={Icon.ArrowRight} onAction={() => open(item.url)} />}
+      {editInNotNow}
+      {isHttpUrl ? (
+        <Action.OpenInBrowser url={item.url} title="Open URL" />
+      ) : (
+        <Action
+          title="Open URL"
+          icon={Icon.ArrowRight}
+          onAction={() => open(item.url)}
+        />
+      )}
       <Action.CopyToClipboard title="Copy URL" content={item.url} />
       {item.kind === "snippet" && item.snippetContent ? (
-        <Action.CopyToClipboard title="Copy Snippet Content" content={item.snippetContent} />
+        <Action.CopyToClipboard
+          title="Copy Snippet Content"
+          content={item.snippetContent}
+        />
       ) : null}
       {item.kind === "api" && item.apiQueryParams ? (
-        <Action.CopyToClipboard title="Copy API Query Params" content={item.apiQueryParams} />
+        <Action.CopyToClipboard
+          title="Copy API Query Params"
+          content={item.apiQueryParams}
+        />
       ) : null}
-      <Action.Push title="Show Details" icon={Icon.Sidebar} target={<Detail markdown={buildMarkdown(item)} metadata={buildMetadata(item)} />} />
+      <Action.Push
+        title="Show Details"
+        icon={Icon.Sidebar}
+        target={
+          <Detail
+            markdown={buildMarkdown(item)}
+            metadata={buildMetadata(item)}
+          />
+        }
+      />
     </ActionPanel>
   );
 }
 
-function BookmarkDetail({ item }: { item: SearchResult }) {
-  return <List.Item.Detail markdown={buildMarkdown(item)} metadata={buildMetadata(item)} />;
-}
-
-function buildMetadata(item: SearchResult): JSX.Element {
+function buildMetadata(item: SearchResult): React.JSX.Element {
   return (
     <List.Item.Detail.Metadata>
       <List.Item.Detail.Metadata.Label title="Kind" text={item.kind} />
-      <List.Item.Detail.Metadata.Label title="Category" text={item.category || "Uncategorized"} />
-      <List.Item.Detail.Metadata.Link title="URL" text={item.url} target={item.url} />
+      <List.Item.Detail.Metadata.Label
+        title="Category"
+        text={item.category || "Uncategorized"}
+      />
+      <List.Item.Detail.Metadata.Link
+        title="URL"
+        text={item.url}
+        target={item.url}
+      />
       <List.Item.Detail.Metadata.Separator />
       {item.tags.length ? (
         <List.Item.Detail.Metadata.TagList title="Tags">
           {item.tags.map((tag) => (
-            <List.Item.Detail.Metadata.TagList.Item key={tag} text={tag} color={colorForTag(tag)} />
+            <List.Item.Detail.Metadata.TagList.Item
+              key={tag}
+              text={tag}
+              color={colorForTag(tag)}
+            />
           ))}
         </List.Item.Detail.Metadata.TagList>
       ) : null}
       {item.kind === "task" ? (
         <>
-          <List.Item.Detail.Metadata.Label title="Completed" text={item.isCompleted ? "Yes" : "No"} />
-          <List.Item.Detail.Metadata.Label title="Due Date" text={item.dueDate ? item.dueDate.toLocaleString() : "N/A"} />
+          <List.Item.Detail.Metadata.Label
+            title="Completed"
+            text={item.isCompleted ? "Yes" : "No"}
+          />
+          <List.Item.Detail.Metadata.Label
+            title="Due Date"
+            text={item.dueDate ? item.dueDate.toLocaleString() : "N/A"}
+          />
         </>
       ) : null}
-      {item.kind === "api" ? <List.Item.Detail.Metadata.Label title="Method" text={item.apiMethod || "GET"} /> : null}
-      {item.updatedAt ? <List.Item.Detail.Metadata.Label title="Updated At" text={item.updatedAt.toLocaleString()} /> : null}
-      {item.isXDomain ? <List.Item.Detail.Metadata.Label title="Domain Priority" text="x.com (lower priority by default)" /> : null}
+      {item.kind === "api" ? (
+        <List.Item.Detail.Metadata.Label
+          title="Method"
+          text={item.apiMethod || "GET"}
+        />
+      ) : null}
+      {item.updatedAt ? (
+        <List.Item.Detail.Metadata.Label
+          title="Updated At"
+          text={item.updatedAt.toLocaleString()}
+        />
+      ) : null}
+      {item.isXDomain ? (
+        <List.Item.Detail.Metadata.Label
+          title="Domain Priority"
+          text="x.com (lower priority by default)"
+        />
+      ) : null}
     </List.Item.Detail.Metadata>
   );
 }
@@ -287,7 +424,9 @@ function buildMarkdown(item: SearchResult): string {
   lines.push(`# ${escapeMarkdown(item.title || "(untitled)")}`);
   lines.push("");
   lines.push(`- Kind: \`${item.kind}\``);
-  lines.push(`- Category: \`${escapeMarkdown(item.category || "Uncategorized")}\``);
+  lines.push(
+    `- Category: \`${escapeMarkdown(item.category || "Uncategorized")}\``,
+  );
   lines.push(`- URL: ${item.url}`);
   if (item.desc) {
     lines.push("");
@@ -322,11 +461,21 @@ function buildAccessories(item: SearchResult): List.Item.Accessory[] {
   }
 
   if (item.kind === "api") {
-    accessories.push({ tag: { value: item.apiMethod || "GET", color: methodColor(item.apiMethod || "GET") } });
+    accessories.push({
+      tag: {
+        value: item.apiMethod || "GET",
+        color: methodColor(item.apiMethod || "GET"),
+      },
+    });
   }
 
   if (item.kind === "task") {
-    accessories.push({ tag: { value: item.isCompleted ? "DONE" : "TODO", color: item.isCompleted ? Color.Green : Color.Orange } });
+    accessories.push({
+      tag: {
+        value: item.isCompleted ? "DONE" : "TODO",
+        color: item.isCompleted ? Color.Green : Color.Orange,
+      },
+    });
   }
 
   if (item.isXDomain) {
@@ -388,7 +537,8 @@ function normalizeMaxResults(raw?: string): number {
 
 function expandPath(inputPath: string): string {
   if (inputPath === "~") return os.homedir();
-  if (inputPath.startsWith("~/")) return path.join(os.homedir(), inputPath.slice(2));
+  if (inputPath.startsWith("~/"))
+    return path.join(os.homedir(), inputPath.slice(2));
   return inputPath;
 }
 
@@ -406,7 +556,10 @@ function isXDomain(url: string): boolean {
   }
 }
 
-function sortAndFilter(rows: SearchResult[], showXDomain: boolean): SearchResult[] {
+function sortAndFilter(
+  rows: SearchResult[],
+  showXDomain: boolean,
+): SearchResult[] {
   const filtered = showXDomain ? rows : rows.filter((row) => !row.isXDomain);
   return filtered.sort((a, b) => {
     const kindRank = KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind);
@@ -421,7 +574,11 @@ function sortAndFilter(rows: SearchResult[], showXDomain: boolean): SearchResult
 }
 
 async function hydrateResults(rows: SQLiteRow[]): Promise<SearchResult[]> {
-  const uniqueHex = [...new Set(rows.map((row) => String(row.tags_blob_hex || "").trim()).filter(Boolean))];
+  const uniqueHex = [
+    ...new Set(
+      rows.map((row) => String(row.tags_blob_hex || "").trim()).filter(Boolean),
+    ),
+  ];
   const missingHex = uniqueHex.filter((hex) => !tagDecodeCache.has(hex));
   if (missingHex.length > 0) {
     const decoded = await decodeTagsBatch(missingHex);
@@ -435,7 +592,7 @@ async function hydrateResults(rows: SQLiteRow[]): Promise<SearchResult[]> {
 
   return rows.map((row) => {
     const tagsHex = String(row.tags_blob_hex || "").trim();
-    const tags = tagsHex ? tagDecodeCache.get(tagsHex) ?? [] : [];
+    const tags = tagsHex ? (tagDecodeCache.get(tagsHex) ?? []) : [];
     const kind = normalizeKind(String(row.kind));
     return {
       id: String(row.id),
@@ -456,11 +613,15 @@ async function hydrateResults(rows: SQLiteRow[]): Promise<SearchResult[]> {
   });
 }
 
-async function decodeTagsBatch(hexList: string[]): Promise<Map<string, string[]>> {
+async function decodeTagsBatch(
+  hexList: string[],
+): Promise<Map<string, string[]>> {
   const output = new Map<string, string[]>();
   if (hexList.length === 0) return output;
 
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "notnow-tag-decode-"));
+  const tempDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "notnow-tag-decode-"),
+  );
   const scriptPath = path.join(tempDir, "decode_tags.swift");
   const inputPath = path.join(tempDir, "input.json");
   const moduleCachePath = path.join(tempDir, "module-cache");
@@ -506,10 +667,18 @@ function escapeLike(input: string): string {
     .replace(/'/g, "''");
 }
 
-async function queryRows(params: { storePath: string; query: string; fetchLimit: number }): Promise<SQLiteRow[]> {
+async function queryRows(params: {
+  storePath: string;
+  query: string;
+  fetchLimit: number;
+}): Promise<SQLiteRow[]> {
   const whereClause =
     params.query.length > 0
-      ? `lower(COALESCE(b.ZURL, '')) LIKE lower('%${escapeLike(params.query)}%') ESCAPE '\\\\'`
+      ? `(lower(COALESCE(b.ZURL, '')) LIKE lower('%${escapeLike(params.query)}%') ESCAPE '\\'
+         OR lower(COALESCE(b.ZTITLE, '')) LIKE lower('%${escapeLike(params.query)}%') ESCAPE '\\'
+         OR lower(COALESCE(b.ZDESC, '')) LIKE lower('%${escapeLike(params.query)}%') ESCAPE '\\'
+         OR lower(COALESCE(b.ZKIND, '')) LIKE lower('%${escapeLike(params.query)}%') ESCAPE '\\'
+         OR lower(COALESCE(c.ZNAME, '')) LIKE lower('%${escapeLike(params.query)}%') ESCAPE '\\')`
       : "1=1";
 
   const sql = `
@@ -534,9 +703,13 @@ ORDER BY b.ZUPDATEDAT DESC
 LIMIT ${Math.floor(params.fetchLimit)};
 `;
 
-  const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json", params.storePath, sql], {
-    maxBuffer: 16 * 1024 * 1024,
-  });
+  const { stdout } = await execFileAsync(
+    "sqlite3",
+    ["-readonly", "-json", params.storePath, sql],
+    {
+      maxBuffer: 16 * 1024 * 1024,
+    },
+  );
 
   const raw = (stdout || "").trim();
   if (!raw) return [];
@@ -545,4 +718,24 @@ LIMIT ${Math.floor(params.fetchLimit)};
 
 function escapeMarkdown(input: string): string {
   return input.replace(/([`*_{}[\]()#+\-.!>])/g, "\\$1");
+}
+
+function resolveEditTargetId(item: SearchResult): string | null {
+  const rawId = String(item.id || "").trim();
+  if (rawId.length === 32 && /^[0-9a-f]+$/i.test(rawId)) {
+    return hexToUuid(rawId);
+  }
+  if (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      rawId,
+    )
+  ) {
+    return rawId.toLowerCase();
+  }
+  return null;
+}
+
+function hexToUuid(hex: string): string {
+  const normalized = hex.toLowerCase();
+  return `${normalized.slice(0, 8)}-${normalized.slice(8, 12)}-${normalized.slice(12, 16)}-${normalized.slice(16, 20)}-${normalized.slice(20, 32)}`;
 }

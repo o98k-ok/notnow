@@ -25,3 +25,8 @@
 | 2026-03-06 | 12:02 | working-tree | ./build.sh | success | Search 列表输出改为纯列表：移除 detail 与冗余字段，仅保留关键信息。 |
 | 2026-03-06 | 22:29 | working-tree | `./build.sh` | success | `notnow_search.sh` 按卡片类型输出业务字段：移除 `items/output_mode/store`，保留 `query/total/limit/results`，并按 `link/snippet/task/api` 返回对应字段。 |
 | 2026-03-06 | 22:47 | working-tree | `./build.sh` | success | 新增独立 Raycast Extension `raycast-notnow`：URL-only 搜索、按类型分组（link/snippet/task/api）、同组内非 x.com 优先、Tag 颜色高亮。 |
+| 2026-03-06 | 23:05 | working-tree | `./build.sh` | success | Raycast Extension：snippet/task/api 默认 Action 改为 `notnow://edit/<id>` 打开编辑页，link 保持浏览器打开。 |
+| 2026-03-06 | 23:17 | working-tree | `./build.sh` | success | 新增 `notnow://edit/<uuid>` URL Scheme：Info.plist 注册 + onOpenURL 解析 + openBookmarkByID 通知打开编辑弹窗。 |
+| 2026-03-06 | 23:21 | working-tree | `./build.sh` | success | NotNow 新增 `notnow://edit/<uuid>` URL Scheme + Raycast Extension 类型下拉筛选 + 多维度搜索(url/title/desc/tags/kind/category) + 非 link 默认打开编辑弹窗 |
+| 2026-03-06 | 23:47 | working-tree | `./build.sh` | success | 主窗口改为单例 `Window`，deep link 先激活现有窗口再异步投递 `openBookmarkByID`，避免 `notnow://edit/<uuid>` 打开新窗口后停在推荐页。 |
+| 2026-03-07 | 00:01 | working-tree | `./build.sh` | success | Raycast deep link 收口为只使用 `Bookmark.id`，移除 URL 业务 UUID 分支，并清理未使用的 `BookmarkDetail` helper；构建通过。 |
