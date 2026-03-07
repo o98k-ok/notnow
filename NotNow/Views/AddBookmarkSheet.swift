@@ -93,7 +93,7 @@ struct AddBookmarkSheet: View {
                                 .foregroundStyle(AppTheme.accent)
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.notNowPlainInteractive)
                             .disabled(url.isEmpty || isFetching)
                         }
                     }
@@ -157,7 +157,7 @@ struct AddBookmarkSheet: View {
                                         }
                                         .foregroundStyle(AppTheme.accent)
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.notNowPlainInteractive)
                                     .disabled(desc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isFetching)
                                     .opacity(desc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.4 : 1)
                                 }
@@ -204,7 +204,7 @@ struct AddBookmarkSheet: View {
                                             .font(.caption)
                                             .foregroundStyle(AppTheme.textTertiary)
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.notNowPlainInteractive)
                                 } else {
                                     Button {
                                         taskDueDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
@@ -220,7 +220,7 @@ struct AddBookmarkSheet: View {
                                         .background(AppTheme.accent.opacity(0.12))
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.notNowPlainInteractive)
                                 }
                             }
                         }
@@ -272,7 +272,7 @@ struct AddBookmarkSheet: View {
                                         }
                                         .foregroundStyle(AppTheme.accent)
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.notNowPlainInteractive)
                                     .disabled(snippetContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isFetching)
                                     .opacity(snippetContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.4 : 1)
                                 }
@@ -313,7 +313,7 @@ struct AddBookmarkSheet: View {
                                     .background(AppTheme.accent.opacity(0.15))
                                     .clipShape(RoundedRectangle(cornerRadius: 6))
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(.notNowPlainInteractive)
                             }
                             HStack(spacing: 8) {
                                 Picker("", selection: $apiMethod) {
@@ -352,7 +352,7 @@ struct AddBookmarkSheet: View {
                                             .font(.caption)
                                             .foregroundStyle(AppTheme.accentPink)
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.notNowPlainInteractive)
                                 }
                             }
                             Button {
@@ -369,7 +369,7 @@ struct AddBookmarkSheet: View {
                                 .background(AppTheme.accent.opacity(0.12))
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.notNowPlainInteractive)
                         }
 
                         // Headers
@@ -394,7 +394,7 @@ struct AddBookmarkSheet: View {
                                             .font(.caption)
                                             .foregroundStyle(AppTheme.accentPink)
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.notNowPlainInteractive)
                                 }
                             }
                             Button {
@@ -411,7 +411,7 @@ struct AddBookmarkSheet: View {
                                 .background(AppTheme.accent.opacity(0.12))
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.notNowPlainInteractive)
                         }
 
                         // Body
@@ -443,7 +443,7 @@ struct AddBookmarkSheet: View {
                                             .background(AppTheme.accent.opacity(0.15))
                                             .clipShape(RoundedRectangle(cornerRadius: 6))
                                         }
-                                        .buttonStyle(.plain)
+                                        .buttonStyle(.notNowPlainInteractive)
                                     }
                                 }
                                 if apiBodyType != "none" {
@@ -486,7 +486,7 @@ struct AddBookmarkSheet: View {
                                     }
                                     .foregroundStyle(AppTheme.accent)
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(.notNowPlainInteractive)
                                 .disabled(url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isFetching)
                             }
                         }
@@ -542,11 +542,11 @@ struct AddBookmarkSheet: View {
                 Spacer()
                 Button("取消") { dismiss() }
                     .ghostButtonStyle()
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                     .keyboardShortcut(.cancelAction)
                 Button("保存") { save() }
                     .accentButtonStyle()
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                     .keyboardShortcut(.defaultAction)
                     .disabled(saveButtonDisabled)
                     .opacity(saveButtonDisabled ? 0.5 : 1)
@@ -591,13 +591,13 @@ struct AddBookmarkSheet: View {
                     Button("取消") {
                         showImportCurlSheet = false
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
 
                     Button("导入") {
                         importFromCurlText()
                     }
                     .accentButtonStyle()
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                     .keyboardShortcut(.defaultAction)
                 }
             }
@@ -628,7 +628,7 @@ struct AddBookmarkSheet: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(AppTheme.accentPink)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                 }
             }
 
@@ -653,7 +653,7 @@ struct AddBookmarkSheet: View {
                             .background(.ultraThinMaterial)
                             .clipShape(Circle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                     .padding(8)
                 }
             } else {
@@ -679,7 +679,7 @@ struct AddBookmarkSheet: View {
                             .stroke(AppTheme.borderSubtle, style: StrokeStyle(lineWidth: 1, dash: [6]))
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
             }
         }
     }
@@ -1068,7 +1068,10 @@ struct AddBookmarkSheet: View {
         bookmark.category = categories.first { $0.id == selectedCategoryID }
         modelContext.insert(bookmark)
         try? modelContext.save()
-        NotificationCenter.default.post(name: .modelDataDidChange, object: nil)
+        NotificationCenter.default.postModelDataDidChange(
+            kind: .bookmarkUpserted,
+            bookmarkID: bookmark.id
+        )
         dismiss()
     }
 
@@ -1122,7 +1125,7 @@ func sheetHeader(title: String, icon: String, onCancel: @escaping () -> Void) ->
                 .background(AppTheme.bgElevated)
                 .clipShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.notNowPlainInteractive)
     }
     .padding(20)
     .background(AppTheme.bgSecondary.opacity(0.5))

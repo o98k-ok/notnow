@@ -363,6 +363,70 @@ struct GhostButton: ViewModifier {
     }
 }
 
+enum NotNowPressFeedbackLevel {
+    case subtle
+    case standard
+    case strong
+
+    var pressedScale: CGFloat {
+        switch self {
+        case .subtle: 0.985
+        case .standard: 0.975
+        case .strong: 0.965
+        }
+    }
+
+    var pressedOpacity: Double {
+        switch self {
+        case .subtle: 0.96
+        case .standard: 0.92
+        case .strong: 0.88
+        }
+    }
+
+    var pressedBrightness: Double {
+        switch self {
+        case .subtle: -0.01
+        case .standard: -0.02
+        case .strong: -0.03
+        }
+    }
+}
+
+struct NotNowPlainInteractiveButtonStyle: ButtonStyle {
+    var level: NotNowPressFeedbackLevel = .standard
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        let isPressed = configuration.isPressed
+        return configuration.label
+            .scaleEffect(reduceMotion ? 1 : (isPressed ? level.pressedScale : 1))
+            .opacity(isPressed ? level.pressedOpacity : 1)
+            .brightness(isPressed ? level.pressedBrightness : 0)
+            .animation(.easeOut(duration: 0.12), value: isPressed)
+    }
+}
+
+struct TapPressFeedbackModifier: ViewModifier {
+    var level: NotNowPressFeedbackLevel = .standard
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @GestureState private var isPressing = false
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(reduceMotion ? 1 : (isPressing ? level.pressedScale : 1))
+            .opacity(isPressing ? level.pressedOpacity : 1)
+            .brightness(isPressing ? level.pressedBrightness : 0)
+            .animation(.easeOut(duration: 0.12), value: isPressing)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .updating($isPressing) { _, state, _ in
+                        state = true
+                    }
+            )
+    }
+}
+
 extension View {
     func glassCard(cornerRadius: CGFloat = 14, isHovered: Bool = false) -> some View {
         modifier(GlassCard(cornerRadius: cornerRadius, isHovered: isHovered))
@@ -370,6 +434,15 @@ extension View {
     func darkTextField() -> some View { modifier(DarkTextField()) }
     func accentButtonStyle() -> some View { modifier(AccentButton()) }
     func ghostButtonStyle() -> some View { modifier(GhostButton()) }
+    func tapPressFeedback(level: NotNowPressFeedbackLevel = .standard) -> some View {
+        modifier(TapPressFeedbackModifier(level: level))
+    }
+}
+
+extension ButtonStyle where Self == NotNowPlainInteractiveButtonStyle {
+    static var notNowPlainInteractive: NotNowPlainInteractiveButtonStyle {
+        NotNowPlainInteractiveButtonStyle()
+    }
 }
 
 // MARK: - Tag Colors

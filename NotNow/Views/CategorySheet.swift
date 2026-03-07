@@ -94,7 +94,7 @@ struct CategorySheet: View {
                                                 )
                                         )
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(.notNowPlainInteractive)
                             }
                         }
                     }
@@ -121,7 +121,7 @@ struct CategorySheet: View {
                                         radius: 4
                                     )
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(.notNowPlainInteractive)
                             }
                         }
                     }
@@ -133,11 +133,11 @@ struct CategorySheet: View {
                 Spacer()
                 Button("取消") { dismiss() }
                     .ghostButtonStyle()
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                     .keyboardShortcut(.cancelAction)
                 Button("保存") { save() }
                     .accentButtonStyle()
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.isEmpty)
                     .opacity(name.isEmpty ? 0.5 : 1)
@@ -166,7 +166,7 @@ struct CategorySheet: View {
             modelContext.insert(cat)
         }
         try? modelContext.save()
-        NotificationCenter.default.post(name: .modelDataDidChange, object: nil)
+        NotificationCenter.default.postModelDataDidChange(kind: .categoryChanged)
         dismiss()
     }
 }

@@ -157,7 +157,7 @@ struct CommandPaletteView: View {
                     .stroke(isSelected ? (color?.opacity(0.5) ?? AppTheme.borderHover) : Color.clear, lineWidth: 1)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.notNowPlainInteractive)
     }
     
     // MARK: - Results List
@@ -272,7 +272,7 @@ struct CommandPaletteView: View {
                     .fill(index == manager.selectedIndex ? AppTheme.accent.opacity(0.15) : Color.clear)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.notNowPlainInteractive)
     }
     
     private var emptyState: some View {
@@ -402,7 +402,7 @@ private struct CommandPaletteSearchField: View {
                         .font(.title3)
                         .foregroundStyle(AppTheme.textTertiary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
             }
         }
         .onAppear {

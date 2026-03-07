@@ -63,14 +63,14 @@ struct OpenWithSheet: View {
                         Text("清除脚本")
                             .ghostButtonStyle()
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                 }
                 Spacer()
                 Button { save() } label: {
                     Text("保存")
                         .accentButtonStyle()
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
                 .keyboardShortcut(.defaultAction)
             }
             .padding(20)

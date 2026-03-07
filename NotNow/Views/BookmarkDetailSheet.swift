@@ -60,6 +60,7 @@ struct BookmarkDetailSheet: View {
     @State private var initialSnapshot: DraftSnapshot?
     @State private var didInitializeDraft = false
     @State private var coverPreviewTask: Task<Void, Never>?
+    @State private var deferredCoverPreviewTask: Task<Void, Never>?
     @State private var showDiscardChangesDialog = false
     @State private var showSaveError = false
     @State private var saveErrorMessage = ""
@@ -120,7 +121,7 @@ struct BookmarkDetailSheet: View {
                                     .foregroundStyle(AppTheme.accent)
                                     .clipShape(RoundedRectangle(cornerRadius: 8))
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.notNowPlainInteractive)
                         }
                     }
                     }
@@ -219,7 +220,7 @@ struct BookmarkDetailSheet: View {
                                             .font(.caption)
                                             .foregroundStyle(AppTheme.textTertiary)
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.notNowPlainInteractive)
 
                                     if !draftTaskCompleted && due < Date() {
                                         Text("已逾期")
@@ -241,7 +242,7 @@ struct BookmarkDetailSheet: View {
                                         .background(AppTheme.accent.opacity(0.12))
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.notNowPlainInteractive)
                                 }
                             }
                         }
@@ -289,7 +290,7 @@ struct BookmarkDetailSheet: View {
                                             .foregroundStyle(AppTheme.accent)
                                             .clipShape(RoundedRectangle(cornerRadius: 8))
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.notNowPlainInteractive)
                                 }
                             }
                         }
@@ -339,7 +340,7 @@ struct BookmarkDetailSheet: View {
                                             .font(.caption)
                                             .foregroundStyle(AppTheme.accentPink)
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.notNowPlainInteractive)
                                 }
                             }
                             Button {
@@ -356,7 +357,7 @@ struct BookmarkDetailSheet: View {
                                 .background(AppTheme.accent.opacity(0.12))
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.notNowPlainInteractive)
                         }
 
                         // Headers
@@ -381,7 +382,7 @@ struct BookmarkDetailSheet: View {
                                             .font(.caption)
                                             .foregroundStyle(AppTheme.accentPink)
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.notNowPlainInteractive)
                                 }
                             }
                             Button {
@@ -398,7 +399,7 @@ struct BookmarkDetailSheet: View {
                                 .background(AppTheme.accent.opacity(0.12))
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.notNowPlainInteractive)
                         }
 
                         // Body
@@ -433,7 +434,7 @@ struct BookmarkDetailSheet: View {
                                             .background(AppTheme.accent.opacity(0.15))
                                             .clipShape(RoundedRectangle(cornerRadius: 6))
                                         }
-                                        .buttonStyle(.plain)
+                                        .buttonStyle(.notNowPlainInteractive)
                                     }
                                 }
                                 if draftAPIBodyType != "none" {
@@ -477,7 +478,7 @@ struct BookmarkDetailSheet: View {
                                 .background(AppTheme.accent.opacity(0.12))
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.notNowPlainInteractive)
                             .disabled(isExecutingAPI || draftURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                             Button {
@@ -503,7 +504,7 @@ struct BookmarkDetailSheet: View {
                                 .background(AppTheme.accent.opacity(0.12))
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.notNowPlainInteractive)
 
                             Spacer()
                         }
@@ -534,7 +535,7 @@ struct BookmarkDetailSheet: View {
                                         .font(.caption.weight(.medium))
                                         .foregroundStyle(AppTheme.textSecondary)
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.notNowPlainInteractive)
                                 }
 
                                 ScrollView {
@@ -585,7 +586,7 @@ struct BookmarkDetailSheet: View {
                                     }
                                     .foregroundStyle(AppTheme.accent)
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(.notNowPlainInteractive)
                                 .disabled(isRefiningAPI || draftURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }
                         }
@@ -687,16 +688,16 @@ struct BookmarkDetailSheet: View {
                     .background(AppTheme.accentPink.opacity(0.1))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
 
                 Spacer()
 
                 Button("取消") { handleCloseTapped() }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
 
                 Button("保存") { saveChanges() }
                     .accentButtonStyle()
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                     .keyboardShortcut(.defaultAction)
             }
             .padding(20)
@@ -706,12 +707,13 @@ struct BookmarkDetailSheet: View {
         .background(AppTheme.bgPrimary)
         .onAppear {
             initializeDraftCoreIfNeeded()
-            scheduleInitialCoverPreviewLoad()
+            scheduleDeferredInitialCoverPreviewLoad()
         }
         .onDisappear {
             apiRequestTask?.cancel()
             coverFetchTask?.cancel()
             coverPreviewTask?.cancel()
+            deferredCoverPreviewTask?.cancel()
         }
         .onChange(of: bookmark.coverData) {
             if coverEditState == .unchanged {
@@ -892,7 +894,7 @@ struct BookmarkDetailSheet: View {
                         .background(AppTheme.accentCyan.opacity(0.12))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
 
                     if hasEditableCover {
                         Button { removeCover() } label: {
@@ -907,7 +909,7 @@ struct BookmarkDetailSheet: View {
                             .background(AppTheme.accentPink.opacity(0.12))
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.notNowPlainInteractive)
                     }
                 }
             }
@@ -958,7 +960,7 @@ struct BookmarkDetailSheet: View {
                             .stroke(AppTheme.borderSubtle, style: StrokeStyle(lineWidth: 1, dash: [6]))
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
             }
         }
     }
@@ -1003,7 +1005,7 @@ struct BookmarkDetailSheet: View {
             .background(AppTheme.accent.opacity(0.12))
             .clipShape(RoundedRectangle(cornerRadius: 6))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.notNowPlainInteractive)
         .disabled(isFetchingCover)
     }
     
@@ -1029,7 +1031,7 @@ struct BookmarkDetailSheet: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(AppTheme.accent)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
             }
 
             HStack(spacing: 10) {
@@ -1093,7 +1095,7 @@ struct BookmarkDetailSheet: View {
                         lineWidth: 1)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.notNowPlainInteractive)
     }
 
     private func refetchCover(mode: CoverFetchMode) {
@@ -1168,8 +1170,20 @@ struct BookmarkDetailSheet: View {
     }
 
     private func deleteBookmark() {
-        bookmark.modelContext?.delete(bookmark)
+        guard let modelContext = bookmark.modelContext else {
+            dismiss()
+            return
+        }
+        let deletedBookmarkID = bookmark.id
+        modelContext.delete(bookmark)
+        try? modelContext.save()
         dismiss()
+        Task { @MainActor in
+            NotificationCenter.default.postModelDataDidChange(
+                kind: .bookmarkDeleted,
+                bookmarkID: deletedBookmarkID
+            )
+        }
     }
 
     private var draftTags: [String] {
@@ -1225,9 +1239,17 @@ struct BookmarkDetailSheet: View {
         initialSnapshot = currentSnapshot()
     }
 
-    private func scheduleInitialCoverPreviewLoad() {
+    private func scheduleDeferredInitialCoverPreviewLoad() {
+        deferredCoverPreviewTask?.cancel()
         guard !bookmark.isSnippet, !bookmark.isTask, !bookmark.isAPI else { return }
-        scheduleCoverPreviewForCurrentState()
+
+        deferredCoverPreviewTask = Task {
+            try? await Task.sleep(nanoseconds: 140_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                scheduleCoverPreviewForCurrentState()
+            }
+        }
     }
 
     private func scheduleCoverPreviewForCurrentState() {
@@ -1368,9 +1390,15 @@ struct BookmarkDetailSheet: View {
 
         do {
             try modelContext.save()
-            NotificationCenter.default.post(name: .modelDataDidChange, object: nil)
             initialSnapshot = currentSnapshot()
             dismiss()
+            let bookmarkID = bookmark.id
+            Task { @MainActor in
+                NotificationCenter.default.postModelDataDidChange(
+                    kind: .bookmarkUpserted,
+                    bookmarkID: bookmarkID
+                )
+            }
         } catch {
             saveErrorMessage = error.localizedDescription
             showSaveError = true

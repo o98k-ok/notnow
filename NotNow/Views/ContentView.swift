@@ -49,6 +49,7 @@ struct ContentView: View {
     @State private var isScopeLoading = false
     @State private var scopeLoadGeneration = 0
     @State private var scopeLoadTask: Task<Void, Never>?
+    @State private var sidebarCountsRefreshTask: Task<Void, Never>?
     @State private var categoryBookmarkCounts: [UUID: Int] = [:]
     @State private var uncategorizedBookmarkCount = 0
     @State private var columnBookmarksCache: [[Bookmark]] = []
@@ -68,6 +69,7 @@ struct ContentView: View {
     @State private var recommendationFocusRequest = 0
     @State private var didRunInitialRecommendation = false
     private let searchDebounceNanoseconds: UInt64 = 450_000_000
+    private let sidebarCountsDebounceNanoseconds: UInt64 = 180_000_000
 
     private enum RecommendationStage {
         case idle
@@ -196,8 +198,8 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .focusSearch)) { _ in
             searchFocusRequest += 1
         }
-        .onReceive(NotificationCenter.default.publisher(for: .modelDataDidChange)) { _ in
-            refreshAll()
+        .onReceive(NotificationCenter.default.publisher(for: .modelDataDidChange)) { notification in
+            handleModelDataDidChange(notification)
         }
         .onAppear {
             NSLog("[NotNow] app appeared")
@@ -239,15 +241,6 @@ struct ContentView: View {
         .onChange(of: columnCount) {
             columnBookmarksCache = splitIntoColumns(bookmarks: bookmarks, columns: columnCount)
         }
-        .onChange(of: showAddSheet) {
-            if !showAddSheet { refreshAll() }
-        }
-        .onChange(of: selectedBookmark) { oldValue, newValue in
-            if oldValue != nil && newValue == nil { refreshAll() }
-        }
-        .onChange(of: showImportSheet) {
-            if !showImportSheet { refreshAll() }
-        }
         .onDisappear {
             recommendationTask?.cancel()
             recommendationTask = nil
@@ -258,6 +251,8 @@ struct ContentView: View {
             recommendationTotalBatches = 0
             scopeLoadTask?.cancel()
             scopeLoadTask = nil
+            sidebarCountsRefreshTask?.cancel()
+            sidebarCountsRefreshTask = nil
             isScopeLoading = false
             isLoadingMore = false
         }
@@ -332,7 +327,7 @@ struct ContentView: View {
                             .background(AppTheme.bgElevated)
                             .clipShape(Circle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                 }
                 Button {
                     editingCategory = nil
@@ -345,7 +340,7 @@ struct ContentView: View {
                         .background(AppTheme.bgElevated)
                         .clipShape(Circle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
             }
             .padding(.horizontal, 20)
             .padding(.top, 20)
@@ -448,7 +443,7 @@ struct ContentView: View {
                     .fill(isActive ? accentColor.opacity(0.12) : .clear)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.notNowPlainInteractive)
     }
 
     // MARK: - Main Content
@@ -512,7 +507,7 @@ struct ContentView: View {
                             )
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                 }
             }
 
@@ -526,7 +521,7 @@ struct ContentView: View {
                             .fixedSize(horizontal: true, vertical: false)
                             .ghostButtonStyle()
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
 
                     Menu {
                         Button("移到未分类") { moveSelected(to: nil) }
@@ -545,7 +540,7 @@ struct ContentView: View {
                         }
                         .ghostButtonStyle()
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                     .disabled(selectedBookmarkIDs.isEmpty)
 
                     Button {
@@ -559,7 +554,7 @@ struct ContentView: View {
                         }
                         .ghostButtonStyle()
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                     .disabled(selectedBookmarkIDs.isEmpty)
 
                     Button {
@@ -577,7 +572,7 @@ struct ContentView: View {
                         }
                         .ghostButtonStyle()
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                     .disabled(selectedBookmarkIDs.isEmpty || isBatchRetagging)
                 }
             }
@@ -589,7 +584,7 @@ struct ContentView: View {
                 }
                 .accentButtonStyle()
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.notNowPlainInteractive)
             .keyboardShortcut("n")
 
             Button {
@@ -605,7 +600,7 @@ struct ContentView: View {
                 }
                 .ghostButtonStyle()
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.notNowPlainInteractive)
             .disabled(isImporting)
 
             Button {
@@ -622,7 +617,7 @@ struct ContentView: View {
                 }
                 .ghostButtonStyle()
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.notNowPlainInteractive)
 
             Button {
                 showSettings = true
@@ -634,7 +629,7 @@ struct ContentView: View {
                     .background(AppTheme.bgElevated)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.notNowPlainInteractive)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
@@ -679,7 +674,7 @@ struct ContentView: View {
                         }
                         .ghostButtonStyle()
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notNowPlainInteractive)
                     .disabled(isRecommending)
                 }
             }
@@ -1038,7 +1033,7 @@ struct ContentView: View {
                     .font(.caption2)
                     .foregroundStyle(currentTheme.color)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
             }
         }
         .frame(maxWidth: .infinity)
@@ -1071,7 +1066,7 @@ struct ContentView: View {
                     }
                     .accentButtonStyle()
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
                 .padding(.top, 8)
             }
         }
@@ -1155,6 +1150,7 @@ struct ContentView: View {
                 }
             }
             .contentShape(Rectangle())
+            .tapPressFeedback(level: .standard)
             .onTapGesture {
                 if isBatchMode {
                     toggleSelection(for: bookmark.id)
@@ -1370,7 +1366,7 @@ struct ContentView: View {
 
     private func refreshAll() {
         cleanupPinnedCategoryIDs()
-        fetchSidebarCounts()
+        scheduleSidebarCountsRefresh(immediate: true)
         if selection == .recommend {
             if !didRunInitialRecommendation {
                 didRunInitialRecommendation = true
@@ -1381,21 +1377,61 @@ struct ContentView: View {
         }
     }
 
-    private func fetchSidebarCounts() {
-        let all = (try? modelContext.fetch(FetchDescriptor<Bookmark>())) ?? []
-        var counts = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, 0) })
-        var uncategorized = 0
+    private func handleModelDataDidChange(_ notification: Notification) {
+        let rawKind = notification.userInfo?[Notification.modelDataChangeKindKey] as? String
+        let changeKind = ModelDataChangeKind(rawValue: rawKind ?? "") ?? .fullRefresh
 
-        for bm in all {
-            if let categoryID = bm.category?.id {
-                counts[categoryID, default: 0] += 1
-            } else {
-                uncategorized += 1
-            }
+        if changeKind == .fullRefresh {
+            refreshAll()
+            return
         }
 
+        if changeKind == .categoryChanged {
+            cleanupPinnedCategoryIDs()
+        }
+
+        scheduleSidebarCountsRefresh()
+        if selection == .recommend {
+            if didRunInitialRecommendation {
+                refreshRecommendations()
+            }
+        } else {
+            requestBookmarksReload(resetLimit: false)
+        }
+    }
+
+    private func scheduleSidebarCountsRefresh(immediate: Bool = false) {
+        sidebarCountsRefreshTask?.cancel()
+        sidebarCountsRefreshTask = Task { @MainActor in
+            if !immediate {
+                try? await Task.sleep(nanoseconds: sidebarCountsDebounceNanoseconds)
+            }
+            guard !Task.isCancelled else { return }
+            fetchSidebarCounts()
+        }
+    }
+
+    private func fetchSidebarCounts() {
+        let allCount = (try? modelContext.fetchCount(FetchDescriptor<Bookmark>())) ?? 0
+        var counts = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, 0) })
+        for category in categories {
+            let categoryID = category.id
+            let descriptor = FetchDescriptor<Bookmark>(
+                predicate: #Predicate<Bookmark> { bm in
+                    bm.category?.id == categoryID
+                }
+            )
+            counts[categoryID] = (try? modelContext.fetchCount(descriptor)) ?? 0
+        }
+        let uncategorizedDescriptor = FetchDescriptor<Bookmark>(
+            predicate: #Predicate<Bookmark> { bm in
+                bm.category == nil
+            }
+        )
+        let uncategorized = (try? modelContext.fetchCount(uncategorizedDescriptor)) ?? 0
+
         withAnimation(.easeOut(duration: 0.16)) {
-            allBookmarkCount = all.count
+            allBookmarkCount = allCount
             categoryBookmarkCounts = counts
             uncategorizedBookmarkCount = uncategorized
         }
@@ -2377,7 +2413,7 @@ private struct DebouncedSearchField: View {
                         .font(.caption)
                         .foregroundStyle(AppTheme.textTertiary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
             }
         }
         .onAppear {
@@ -2561,7 +2597,7 @@ private struct ImportBookmarksSheet: View {
                                     )
                             )
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.notNowPlainInteractive)
                     }
                 }
 
@@ -2648,7 +2684,7 @@ private struct ImportBookmarksSheet: View {
                                 .foregroundStyle(AppTheme.textPrimary)
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.notNowPlainInteractive)
                             if notNowZipURL != nil {
                                 Button {
                                     notNowZipURL = nil
@@ -2657,7 +2693,7 @@ private struct ImportBookmarksSheet: View {
                                         .font(.subheadline)
                                         .foregroundStyle(AppTheme.textTertiary)
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(.notNowPlainInteractive)
                             }
                         }
                         Text("由本应用的「导出数据与配置」生成的 zip 包。")
@@ -2676,7 +2712,7 @@ private struct ImportBookmarksSheet: View {
                     onCancel()
                 }
                 .ghostButtonStyle()
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
 
                 Button {
                     onImport(selectedSource)
@@ -2692,7 +2728,7 @@ private struct ImportBookmarksSheet: View {
                     }
                     .accentButtonStyle()
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
                 .keyboardShortcut(.defaultAction)
                 .disabled(
                     isImporting
@@ -3199,7 +3235,7 @@ private struct SettingsView: View {
                         .background(AppTheme.bgElevated)
                         .clipShape(Circle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
             }
             .padding(24)
 
@@ -3319,7 +3355,7 @@ private struct SettingsView: View {
                 .padding(.vertical, 12)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.notNowPlainInteractive)
 
             // Content
             if isExpanded {
@@ -3396,7 +3432,7 @@ private struct SettingsView: View {
                 }
                 .ghostButtonStyle()
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.notNowPlainInteractive)
             .disabled(isExporting)
 
             if let exportError {
@@ -3565,7 +3601,7 @@ private struct SettingsView: View {
                             )
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
                 .help(theme.label)
             }
         }
@@ -3661,7 +3697,7 @@ private struct SettingsView: View {
                     }
                     .ghostButtonStyle()
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
                 .disabled(aiTesting)
             }
 

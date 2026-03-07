@@ -82,3 +82,30 @@ extension Notification.Name {
     static let modelDataDidChange = Notification.Name("modelDataDidChange")
     static let openBookmarkByID = Notification.Name("openBookmarkByID")
 }
+
+enum ModelDataChangeKind: String {
+    case fullRefresh
+    case bookmarkUpserted
+    case bookmarkDeleted
+    case categoryChanged
+}
+
+extension Notification {
+    static let modelDataChangeKindKey = "modelDataChangeKind"
+    static let modelDataBookmarkIDKey = "modelDataBookmarkID"
+}
+
+extension NotificationCenter {
+    func postModelDataDidChange(
+        kind: ModelDataChangeKind = .fullRefresh,
+        bookmarkID: UUID? = nil
+    ) {
+        var userInfo: [AnyHashable: Any] = [
+            Notification.modelDataChangeKindKey: kind.rawValue
+        ]
+        if let bookmarkID {
+            userInfo[Notification.modelDataBookmarkIDKey] = bookmarkID.uuidString
+        }
+        post(name: .modelDataDidChange, object: nil, userInfo: userInfo)
+    }
+}

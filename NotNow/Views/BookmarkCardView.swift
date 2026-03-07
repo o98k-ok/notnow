@@ -389,7 +389,7 @@ struct BookmarkCardView: View {
                         }
                     }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.notNowPlainInteractive)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(bookmark.title.isEmpty ? "未命名任务" : bookmark.title)

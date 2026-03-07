@@ -30,3 +30,5 @@
 | 2026-03-06 | 23:21 | working-tree | `./build.sh` | success | NotNow 新增 `notnow://edit/<uuid>` URL Scheme + Raycast Extension 类型下拉筛选 + 多维度搜索(url/title/desc/tags/kind/category) + 非 link 默认打开编辑弹窗 |
 | 2026-03-06 | 23:47 | working-tree | `./build.sh` | success | 主窗口改为单例 `Window`，deep link 先激活现有窗口再异步投递 `openBookmarkByID`，避免 `notnow://edit/<uuid>` 打开新窗口后停在推荐页。 |
 | 2026-03-07 | 00:01 | working-tree | `./build.sh` | success | Raycast deep link 收口为只使用 `Bookmark.id`，移除 URL 业务 UUID 分支，并清理未使用的 `BookmarkDetail` helper；构建通过。 |
+| 2026-03-07 | 12:23 | working-tree | `./build.sh` | success | 拉取 `origin/main` 最新后构建通过，归档成功并导出到 `build/export/NotNow.app`。 |
+| 2026-03-07 | 12:43 | working-tree | `./build.sh` | success | 统一按钮与点击区按下反馈：新增 `.notNowPlainInteractive` 样式并全量替换 `.plain`，书签卡片点击区加入按下态反馈。 |
