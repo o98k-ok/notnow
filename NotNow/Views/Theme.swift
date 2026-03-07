@@ -370,25 +370,25 @@ enum NotNowPressFeedbackLevel {
 
     var pressedScale: CGFloat {
         switch self {
-        case .subtle: 0.985
-        case .standard: 0.975
-        case .strong: 0.965
+        case .subtle: 0.975
+        case .standard: 0.96
+        case .strong: 0.945
         }
     }
 
     var pressedOpacity: Double {
         switch self {
-        case .subtle: 0.96
-        case .standard: 0.92
-        case .strong: 0.88
+        case .subtle: 0.85
+        case .standard: 0.75
+        case .strong: 0.65
         }
     }
 
     var pressedBrightness: Double {
         switch self {
-        case .subtle: -0.01
-        case .standard: -0.02
-        case .strong: -0.03
+        case .subtle: -0.03
+        case .standard: -0.06
+        case .strong: -0.09
         }
     }
 }
@@ -407,26 +407,6 @@ struct NotNowPlainInteractiveButtonStyle: ButtonStyle {
     }
 }
 
-struct TapPressFeedbackModifier: ViewModifier {
-    var level: NotNowPressFeedbackLevel = .standard
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @GestureState private var isPressing = false
-
-    func body(content: Content) -> some View {
-        content
-            .scaleEffect(reduceMotion ? 1 : (isPressing ? level.pressedScale : 1))
-            .opacity(isPressing ? level.pressedOpacity : 1)
-            .brightness(isPressing ? level.pressedBrightness : 0)
-            .animation(.easeOut(duration: 0.12), value: isPressing)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0)
-                    .updating($isPressing) { _, state, _ in
-                        state = true
-                    }
-            )
-    }
-}
-
 extension View {
     func glassCard(cornerRadius: CGFloat = 14, isHovered: Bool = false) -> some View {
         modifier(GlassCard(cornerRadius: cornerRadius, isHovered: isHovered))
@@ -434,9 +414,6 @@ extension View {
     func darkTextField() -> some View { modifier(DarkTextField()) }
     func accentButtonStyle() -> some View { modifier(AccentButton()) }
     func ghostButtonStyle() -> some View { modifier(GhostButton()) }
-    func tapPressFeedback(level: NotNowPressFeedbackLevel = .standard) -> some View {
-        modifier(TapPressFeedbackModifier(level: level))
-    }
 }
 
 extension ButtonStyle where Self == NotNowPlainInteractiveButtonStyle {

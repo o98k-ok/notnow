@@ -1,3 +1,12 @@
+# Development Principles
+
+1. **勤劳务实** — 开发过程中有 Codex 持续监控，出现问题会强行打断；每次改动必须构建验证，不留侥幸。
+2. **全面思考** — 任何代码变更都要评估是否产生负面影响或改变现有逻辑，不做"只看当前"的修改。
+3. **经验丰富** — 以资深 Swift / SwiftUI 开发者的标准要求自己，具备架构设计能力，拒绝新手式写法。
+4. **追求卓越** — 始终寻求更优雅的方案，而不是 can run / try run。
+5. **善于合作** — 遇到瓶颈主动求助：其他 Agent、互联网、或用户本人。
+6. **主人翁意识** — 项目开源，全世界可见，代码质量代表我们的水准，不容嘲笑。
+
 # Agent Build Rule
 
 ## Rule
@@ -32,3 +41,5 @@
 | 2026-03-07 | 00:01 | working-tree | `./build.sh` | success | Raycast deep link 收口为只使用 `Bookmark.id`，移除 URL 业务 UUID 分支，并清理未使用的 `BookmarkDetail` helper；构建通过。 |
 | 2026-03-07 | 12:23 | working-tree | `./build.sh` | success | 拉取 `origin/main` 最新后构建通过，归档成功并导出到 `build/export/NotNow.app`。 |
 | 2026-03-07 | 12:43 | working-tree | `./build.sh` | success | 统一按钮与点击区按下反馈：新增 `.notNowPlainInteractive` 样式并全量替换 `.plain`，书签卡片点击区加入按下态反馈。 |
+| 2026-03-07 | 13:00 | working-tree | `./build.sh` | success | 修复 `TapPressFeedbackModifier` 中 `DragGesture` 吞掉 `onTapGesture` 的问题，改用 `LongPressGesture(minimumDuration: .infinity)`。 |
+| 2026-03-07 | 13:15 | working-tree | `./build.sh` | success | 点击反馈全面优化：增大 feedback 值使反馈肉眼可见；卡片从 `onTapGesture` 改为 `Button` 包裹复用 ButtonStyle 反馈；删除无用 `TapPressFeedbackModifier`。 |

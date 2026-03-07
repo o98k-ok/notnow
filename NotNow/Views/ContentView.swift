@@ -1143,25 +1143,26 @@ struct ContentView: View {
     }
 
     private func bookmarkCell(for bookmark: Bookmark) -> some View {
-        BookmarkCardView(bookmark: bookmark)
-            .overlay(alignment: .topLeading) {
-                if isBatchMode {
-                    batchCheckmark(for: bookmark.id)
-                }
+        Button {
+            if isBatchMode {
+                toggleSelection(for: bookmark.id)
+            } else if !NSEvent.modifierFlags.contains(.command) {
+                handleClickAction(for: bookmark, isCmdClick: false)
             }
-            .contentShape(Rectangle())
-            .tapPressFeedback(level: .standard)
-            .onTapGesture {
-                if isBatchMode {
-                    toggleSelection(for: bookmark.id)
-                } else if !NSEvent.modifierFlags.contains(.command) {
-                    handleClickAction(for: bookmark, isCmdClick: false)
+        } label: {
+            BookmarkCardView(bookmark: bookmark)
+                .overlay(alignment: .topLeading) {
+                    if isBatchMode {
+                        batchCheckmark(for: bookmark.id)
+                    }
                 }
-            }
-            .modifier(NonBatchGesturesModifier(isBatchMode: isBatchMode) {
-                handleClickAction(for: bookmark, isCmdClick: true)
-            })
-            .contextMenu { contextMenu(for: bookmark) }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.notNowPlainInteractive)
+        .modifier(NonBatchGesturesModifier(isBatchMode: isBatchMode) {
+            handleClickAction(for: bookmark, isCmdClick: true)
+        })
+        .contextMenu { contextMenu(for: bookmark) }
     }
 
     private func gridIcon(for n: Int) -> String {
