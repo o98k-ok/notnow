@@ -46,3 +46,5 @@
 | 2026-03-07 | 13:15 | working-tree | `./build.sh` | success | 点击反馈全面优化：增大 feedback 值使反馈肉眼可见；卡片从 `onTapGesture` 改为 `Button` 包裹复用 ButtonStyle 反馈；删除无用 `TapPressFeedbackModifier`。 |
 | 2026-03-08 | 10:30 | working-tree | `./build.sh` | success | Chromium 浏览器书签导入扩展：`.chrome` → `.browser`，新增 `ChromiumBrowserDefinition`（Chrome/Edge/Brave/Arc/Tabbit），导入弹窗增加浏览器选择 + Profile 多选。 |
 | 2026-03-08 | 10:58 | working-tree | `./build.sh` | success | 修复默认浏览器选中逻辑：自动检测第一个有 Profile 的浏览器；收窄文案避免误导"多浏览器同时导入"。 |
+| 2026-03-08 | 17:17 | working-tree | `./build.sh` | failed | 沙箱权限限制导致归档失败：无法写入 Xcode DerivedData / Archive 中间产物目录。 |
+| 2026-03-08 | 17:26 | working-tree | `./build.sh` | success | 提权后归档通过，产物输出到 `build/export/NotNow.app`。 |
