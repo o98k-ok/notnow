@@ -36,7 +36,7 @@ NotNow 支持 4 种书签类型：`link`（链接）、`snippet`（片段）、`
 
 | 导入源 | 说明 |
 |---|---|
-| **Chrome 书签** | 读取本地 Chrome `Bookmarks` JSON 文件，支持多 Profile |
+| **浏览器书签** | 读取本机 Chromium 系浏览器（Chrome、Edge、Brave、Arc、Tabbit）的 `Bookmarks` JSON 文件，选择浏览器后可多选 Profile 合并导入；Safari/Firefox 暂不支持 |
 | **GitHub Stars** | 通过 GitHub REST API 拉取指定用户的 starred 仓库 |
 | **Twitter (X) Likes** | 通过外部脚本抓取推文，遇到已存在的 URL 自动停止 |
 | **NotNow 备份 (.zip)** | 从导出的 zip 恢复书签、分类和配置，支持所有类型 |

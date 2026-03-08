@@ -27,8 +27,11 @@ struct ContentView: View {
     @State private var importAlertMessage = ""
     @State private var showImportAlert = false
     @State private var showImportSheet = false
-    @State private var selectedImportSource: ImportSource = .chrome
+    @State private var selectedImportSource: ImportSource = .browser
     @State private var githubStarsInput = ""
+    @State private var selectedBrowser: ChromiumBrowserDefinition = ChromiumBrowserDefinition.builtinBrowsers[0]
+    @State private var availableBrowserProfiles: [BrowserProfile] = []
+    @State private var selectedProfileIDs: Set<String> = []
     @AppStorage("twitterLikes.enabled") private var twitterLikesEnabled = false
     @AppStorage("twitterLikes.binPath") private var twitterLikesBinPath = ""
     @AppStorage("twitterLikes.likesURL") private var twitterLikesURL = ""
@@ -180,6 +183,9 @@ struct ContentView: View {
                 twitterLikesEnabled: twitterLikesEnabled,
                 twitterLikesURL: twitterLikesURL,
                 notNowZipURL: $notNowZipURL,
+                selectedBrowser: $selectedBrowser,
+                availableBrowserProfiles: $availableBrowserProfiles,
+                selectedProfileIDs: $selectedProfileIDs,
                 isImporting: isImporting,
                 onCancel: { showImportSheet = false },
                 onImport: { source in
@@ -2038,14 +2044,23 @@ struct ContentView: View {
                     isImporting = false
                 }
                 return
-            case .chrome, .githubStars, .twitterLikes:
+            case .browser, .githubStars, .twitterLikes:
                 break
             }
 
             let entries: [ImportEntry]
             switch source {
-            case .chrome:
-                entries = ChromeBookmarksImporter.loadAllEntries().map {
+            case .browser:
+                let selectedProfiles = availableBrowserProfiles.filter { selectedProfileIDs.contains($0.id) }
+                guard !selectedProfiles.isEmpty else {
+                    await MainActor.run {
+                        importAlertMessage = "未找到可导入的浏览器 Profile，请确认浏览器已安装并至少存在一个 Profile。"
+                        showImportAlert = true
+                        isImporting = false
+                    }
+                    return
+                }
+                entries = ChromiumBookmarksImporter.loadEntries(from: selectedProfiles).map {
                     ImportEntry(title: $0.title, url: $0.url)
                 }
             case .githubStars:
@@ -2485,7 +2500,7 @@ private struct NonBatchGesturesModifier: ViewModifier {
 }
 
 private enum ImportSource: String, CaseIterable, Identifiable {
-    case chrome
+    case browser
     case githubStars
     case twitterLikes
     case notNow
@@ -2494,7 +2509,7 @@ private enum ImportSource: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .chrome: return "Chrome"
+        case .browser: return "浏览器书签"
         case .githubStars: return "GitHub Stars"
         case .twitterLikes: return "Twitter Likes"
         case .notNow: return "NotNow 备份"
@@ -2503,8 +2518,8 @@ private enum ImportSource: String, CaseIterable, Identifiable {
 
     var description: String {
         switch self {
-        case .chrome:
-            return "从 Chrome 浏览器书签中导入数据。"
+        case .browser:
+            return "从本机 Chromium 系浏览器书签中导入，支持选择浏览器与多个 Profile。"
         case .githubStars:
             return "从 GitHub 星标仓库列表导入，需提供用户名或 profile 链接。"
         case .twitterLikes:
@@ -2516,12 +2531,37 @@ private enum ImportSource: String, CaseIterable, Identifiable {
 
     var systemImageName: String {
         switch self {
-        case .chrome: return "globe"
+        case .browser: return "globe"
         case .githubStars: return "star.circle"
         case .twitterLikes: return "heart.circle"
         case .notNow: return "doc.zipper"
         }
     }
+}
+
+// MARK: - Chromium Browser Definition
+
+private struct ChromiumBrowserDefinition: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let relativeUserDataPath: String
+
+    static let builtinBrowsers: [ChromiumBrowserDefinition] = [
+        .init(id: "chrome", title: "Chrome", relativeUserDataPath: "Google/Chrome"),
+        .init(id: "edge", title: "Edge", relativeUserDataPath: "Microsoft Edge"),
+        .init(id: "brave", title: "Brave", relativeUserDataPath: "BraveSoftware/Brave-Browser"),
+        .init(id: "arc", title: "Arc", relativeUserDataPath: "Arc/User Data"),
+        .init(id: "tabbit", title: "Tabbit", relativeUserDataPath: "Tabbit"),
+    ]
+}
+
+private struct BrowserProfile: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let bookmarkFileURL: URL
+    let browserID: String
+
+    var displayName: String { name }
 }
 
 private struct ImportEntry {
@@ -2535,6 +2575,9 @@ private struct ImportBookmarksSheet: View {
     let twitterLikesEnabled: Bool
     let twitterLikesURL: String
     @Binding var notNowZipURL: URL?
+    @Binding var selectedBrowser: ChromiumBrowserDefinition
+    @Binding var availableBrowserProfiles: [BrowserProfile]
+    @Binding var selectedProfileIDs: Set<String>
     let isImporting: Bool
     let onCancel: () -> Void
     let onImport: (ImportSource) -> Void
@@ -2556,6 +2599,9 @@ private struct ImportBookmarksSheet: View {
                         Button {
                             withAnimation(.easeInOut(duration: 0.15)) {
                                 selectedSource = source
+                                if source == .browser {
+                                    refreshBrowserProfiles()
+                                }
                             }
                         } label: {
                             HStack(spacing: 12) {
@@ -2600,6 +2646,10 @@ private struct ImportBookmarksSheet: View {
                         }
                         .buttonStyle(.notNowPlainInteractive)
                     }
+                }
+
+                if selectedSource == .browser {
+                    browserProfileSelectionView
                 }
 
                 if selectedSource == .githubStars {
@@ -2733,6 +2783,7 @@ private struct ImportBookmarksSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(
                     isImporting
+                        || (selectedSource == .browser && selectedProfileIDs.isEmpty)
                         || (selectedSource == .notNow && notNowZipURL == nil)
                         || (selectedSource == .twitterLikes && !twitterLikesEnabled)
                 )
@@ -2740,47 +2791,159 @@ private struct ImportBookmarksSheet: View {
             .padding(20)
             .background(AppTheme.bgSecondary.opacity(0.5))
         }
-        .frame(minWidth: 420, minHeight: 360)
+        .frame(minWidth: 420, minHeight: 420)
         .background(AppTheme.bgPrimary)
+        .onAppear {
+            if selectedSource == .browser {
+                refreshBrowserProfiles()
+            }
+        }
+    }
+
+    // MARK: - Browser / Profile Selection
+
+    @ViewBuilder
+    private var browserProfileSelectionView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("选择浏览器")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.textTertiary)
+                .textCase(.uppercase)
+
+            HStack(spacing: 8) {
+                ForEach(ChromiumBrowserDefinition.builtinBrowsers) { browser in
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            selectedBrowser = browser
+                            refreshBrowserProfiles()
+                        }
+                    } label: {
+                        Text(browser.title)
+                            .font(.caption.weight(.medium))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                selectedBrowser.id == browser.id
+                                    ? AppTheme.accent.opacity(0.18) : AppTheme.bgInput
+                            )
+                            .foregroundStyle(
+                                selectedBrowser.id == browser.id
+                                    ? AppTheme.accent : AppTheme.textSecondary
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.notNowPlainInteractive)
+                }
+            }
+
+            Text("可用 Profile")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.textTertiary)
+                .textCase(.uppercase)
+                .padding(.top, 4)
+
+            if availableBrowserProfiles.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.accentPink)
+                    Text("未检测到 \(selectedBrowser.title) 的书签数据，可切换其他浏览器或确认已安装。")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textTertiary)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(AppTheme.bgInput)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(availableBrowserProfiles) { profile in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.1)) {
+                                if selectedProfileIDs.contains(profile.id) {
+                                    selectedProfileIDs.remove(profile.id)
+                                } else {
+                                    selectedProfileIDs.insert(profile.id)
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: selectedProfileIDs.contains(profile.id) ? "checkmark.square.fill" : "square")
+                                    .font(.subheadline)
+                                    .foregroundStyle(selectedProfileIDs.contains(profile.id) ? AppTheme.accent : AppTheme.textTertiary)
+                                Text(profile.displayName)
+                                    .font(.subheadline)
+                                    .foregroundStyle(AppTheme.textPrimary)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(AppTheme.bgInput)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.notNowPlainInteractive)
+                    }
+                }
+            }
+        }
+    }
+
+    private func refreshBrowserProfiles() {
+        let profiles = ChromiumBookmarksImporter.discoverProfiles(for: selectedBrowser)
+        availableBrowserProfiles = profiles
+        selectedProfileIDs = Set(profiles.map(\.id))
+
+        if profiles.isEmpty {
+            if let first = ChromiumBrowserDefinition.builtinBrowsers.first(where: {
+                $0.id != selectedBrowser.id && !ChromiumBookmarksImporter.discoverProfiles(for: $0).isEmpty
+            }) {
+                selectedBrowser = first
+                let found = ChromiumBookmarksImporter.discoverProfiles(for: first)
+                availableBrowserProfiles = found
+                selectedProfileIDs = Set(found.map(\.id))
+            }
+        }
     }
 }
 
-private enum ChromeBookmarksImporter {
+private enum ChromiumBookmarksImporter {
     struct Entry {
         let title: String
         let url: String
     }
 
-    static func loadAllEntries() -> [Entry] {
-        var all: [Entry] = []
-        for fileURL in chromeBookmarkFiles() {
-            all.append(contentsOf: parseBookmarkFile(fileURL))
-        }
-        return all
-    }
-
-    private static func chromeBookmarkFiles() -> [URL] {
+    static func discoverProfiles(for browser: ChromiumBrowserDefinition) -> [BrowserProfile] {
         let fm = FileManager.default
         guard
             let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
         else { return [] }
 
-        let chromeRoot = appSupport
-            .appendingPathComponent("Google")
-            .appendingPathComponent("Chrome")
-
+        let browserRoot = appSupport.appendingPathComponent(browser.relativeUserDataPath)
         let names = (try? fm.contentsOfDirectory(
-            atPath: chromeRoot.path(percentEncoded: false))
+            atPath: browserRoot.path(percentEncoded: false))
         ) ?? []
 
-        var files: [URL] = []
+        var profiles: [BrowserProfile] = []
         for name in names where name == "Default" || name.hasPrefix("Profile ") {
-            let file = chromeRoot.appendingPathComponent(name).appendingPathComponent("Bookmarks")
+            let file = browserRoot.appendingPathComponent(name).appendingPathComponent("Bookmarks")
             if fm.fileExists(atPath: file.path(percentEncoded: false)) {
-                files.append(file)
+                profiles.append(BrowserProfile(
+                    id: "\(browser.id)_\(name)",
+                    name: name,
+                    bookmarkFileURL: file,
+                    browserID: browser.id
+                ))
             }
         }
-        return files
+        return profiles
+    }
+
+    static func loadEntries(from profiles: [BrowserProfile]) -> [Entry] {
+        var all: [Entry] = []
+        for profile in profiles {
+            all.append(contentsOf: parseBookmarkFile(profile.bookmarkFileURL))
+        }
+        return all
     }
 
     private static func parseBookmarkFile(_ url: URL) -> [Entry] {

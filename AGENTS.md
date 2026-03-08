@@ -12,7 +12,8 @@
 ## Rule
 - 每次完成代码改动后，必须使用 `./build.sh` 进行编译验证。
 - 不使用 `xcodebuild` 直接命令作为最终验证入口；统一以 `build.sh` 为准。
-- 每次执行 `./build.sh` 后，在下方追加一条构建记录。
+- 每次执行 `./build.sh` 后，必须在下方 Build Log 表格末尾追加一条构建记录。
+- 每次代码修改或编辑后，必须显式告知用户已遵守本准则；即使自行判断有些准则被跳过，也必须向用户说明理由并确认是否跳过。
 
 ## Build Log
 | Date (YYYY-MM-DD) | Time | Commit/Ref | Command | Result | Notes |
@@ -43,3 +44,5 @@
 | 2026-03-07 | 12:43 | working-tree | `./build.sh` | success | 统一按钮与点击区按下反馈：新增 `.notNowPlainInteractive` 样式并全量替换 `.plain`，书签卡片点击区加入按下态反馈。 |
 | 2026-03-07 | 13:00 | working-tree | `./build.sh` | success | 修复 `TapPressFeedbackModifier` 中 `DragGesture` 吞掉 `onTapGesture` 的问题，改用 `LongPressGesture(minimumDuration: .infinity)`。 |
 | 2026-03-07 | 13:15 | working-tree | `./build.sh` | success | 点击反馈全面优化：增大 feedback 值使反馈肉眼可见；卡片从 `onTapGesture` 改为 `Button` 包裹复用 ButtonStyle 反馈；删除无用 `TapPressFeedbackModifier`。 |
+| 2026-03-08 | 10:30 | working-tree | `./build.sh` | success | Chromium 浏览器书签导入扩展：`.chrome` → `.browser`，新增 `ChromiumBrowserDefinition`（Chrome/Edge/Brave/Arc/Tabbit），导入弹窗增加浏览器选择 + Profile 多选。 |
+| 2026-03-08 | 10:58 | working-tree | `./build.sh` | success | 修复默认浏览器选中逻辑：自动检测第一个有 Profile 的浏览器；收窄文案避免误导"多浏览器同时导入"。 |
