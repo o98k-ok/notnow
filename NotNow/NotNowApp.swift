@@ -39,7 +39,7 @@ struct NotNowApp: App {
                     }
                 }
         }
-        .modelContainer(for: [Bookmark.self, Category.self])
+        .modelContainer(for: [Bookmark.self, Category.self, KnowledgeIndex.self, KnowledgeEventLog.self])
         .defaultSize(width: 1100, height: 750)
         .windowStyle(.hiddenTitleBar)
         .commands {

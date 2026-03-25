@@ -1393,11 +1393,16 @@ struct BookmarkDetailSheet: View {
             initialSnapshot = currentSnapshot()
             dismiss()
             let bookmarkID = bookmark.id
+            let updatedBookmark = bookmark
+            let ctx = modelContext
             Task { @MainActor in
                 NotificationCenter.default.postModelDataDidChange(
                     kind: .bookmarkUpserted,
                     bookmarkID: bookmarkID
                 )
+            }
+            Task { @MainActor in
+                await KnowledgeIndexService.shared.index(updatedBookmark, context: ctx)
             }
         } catch {
             saveErrorMessage = error.localizedDescription

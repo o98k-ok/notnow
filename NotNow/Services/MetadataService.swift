@@ -299,6 +299,11 @@ struct AIRecommendationCandidate: Sendable {
     let snippet: String
 }
 
+struct AIIndexMeta: Sendable {
+    let summary: String
+    let keywords: [String]
+}
+
 struct AIRecommendationResult: Sendable {
     let summary: String?
     let selectedURLs: [String]
@@ -1143,6 +1148,255 @@ actor AIService {
             return sel
         } catch {
             NSLog("[AI] cover region error: %@", error.localizedDescription)
+            return nil
+        }
+    }
+
+    // MARK: - Knowledge Index
+
+    func summarizeForIndex(plainText: String, kind: String, title: String) async -> AIIndexMeta? {
+        guard let cfg = AIConfig.load() else { return nil }
+        let trimmed = String(plainText.prefix(4000))
+        guard !trimmed.isEmpty else { return nil }
+
+        struct ChatRequest: Encodable {
+            struct Message: Encodable { let role: String; let content: String }
+            let model: String
+            let messages: [Message]
+            let temperature: Double
+        }
+
+        let systemPrompt = """
+        你是一个知识库助手。请根据提供的内容，生成一段摘要和一组关键词。
+        只输出一个 JSON 对象，格式为：
+        {"summary": "不超过 120 字的摘要", "keywords": ["关键词1", "关键词2", ...]}
+        keywords 最多 10 个，简洁的中文或英文短语。不要输出多余文字。
+        """
+        let userContent = "类型：\(kind)\n标题：\(title)\n\n内容：\n\(trimmed)"
+
+        let body = ChatRequest(
+            model: cfg.model,
+            messages: [
+                .init(role: "system", content: systemPrompt),
+                .init(role: "user", content: userContent)
+            ],
+            temperature: 0.3
+        )
+        guard let bodyData = try? JSONEncoder().encode(body) else { return nil }
+
+        var request = URLRequest(url: cfg.apiURL, timeoutInterval: 25)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !cfg.apiKey.isEmpty {
+            request.setValue("Bearer \(cfg.apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = bodyData
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200...299).contains(status) else {
+                NSLog("[AI] summarizeForIndex HTTP %d", status)
+                return nil
+            }
+
+            struct ChatResponse: Decodable {
+                struct Choice: Decodable {
+                    struct Message: Decodable { let content: String }
+                    let message: Message
+                }
+                let choices: [Choice]
+            }
+
+            guard let decoded = try? JSONDecoder().decode(ChatResponse.self, from: data),
+                  let content = decoded.choices.first?.message.content,
+                  let jsonData = content.data(using: .utf8)
+            else {
+                NSLog("[AI] summarizeForIndex: decode failed")
+                return nil
+            }
+
+            struct Parsed: Decodable {
+                let summary: String?
+                let keywords: [String]?
+            }
+
+            guard let parsed = try? JSONDecoder().decode(Parsed.self, from: jsonData) else {
+                NSLog("[AI] summarizeForIndex: JSON parse failed")
+                return nil
+            }
+
+            return AIIndexMeta(
+                summary: parsed.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                keywords: parsed.keywords ?? []
+            )
+        } catch {
+            NSLog("[AI] summarizeForIndex error: %@", error.localizedDescription)
+            return nil
+        }
+    }
+
+    // MARK: - Explore: Resource Suggestions
+
+    struct SuggestedResource: Sendable {
+        let url: String
+        let title: String
+        let reason: String
+        let confidence: Double
+    }
+
+    /// Given a pre-built prompt, ask the model to return an array of {url, title, reason} objects.
+    func suggestResources(prompt: String) async -> [SuggestedResource]? {
+        guard let cfg = AIConfig.load() else { return nil }
+
+        struct ChatRequest: Encodable {
+            struct Message: Encodable { let role: String; let content: String }
+            let model: String
+            let messages: [Message]
+            let temperature: Double
+        }
+        struct ChatResponse: Decodable {
+            struct Choice: Decodable {
+                struct Message: Decodable { let content: String }
+                let message: Message
+            }
+            let choices: [Choice]
+        }
+        struct Item: Decodable {
+            let url: String
+            let title: String
+            let reason: String
+            let confidence: Double?
+        }
+
+        let body = ChatRequest(
+            model: cfg.model,
+            messages: [
+                .init(role: "system", content: "你是一个知识探索助手，只输出 JSON 数组。"),
+                .init(role: "user", content: prompt),
+            ],
+            temperature: 0.5
+        )
+        guard let payload = try? JSONEncoder().encode(body) else { return nil }
+
+        var request = URLRequest(url: cfg.apiURL, timeoutInterval: 20)
+        request.httpMethod = "POST"
+        request.httpBody = payload
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !cfg.apiKey.isEmpty {
+            request.setValue("Bearer \(cfg.apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let status = (response as? HTTPURLResponse)?.statusCode,
+                  (200...299).contains(status) else { return nil }
+            guard let decoded = try? JSONDecoder().decode(ChatResponse.self, from: data),
+                  let content = decoded.choices.first?.message.content else { return nil }
+
+            // Strip markdown fences if present
+            let cleaned = content
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: #"^```[a-z]*\n?"#, with: "", options: .regularExpression)
+                .replacingOccurrences(of: #"```$"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard let jsonData = cleaned.data(using: .utf8),
+                  let items = try? JSONDecoder().decode([Item].self, from: jsonData)
+            else { return nil }
+
+            return items
+                .filter { !$0.url.trimmingCharacters(in: .whitespaces).isEmpty }
+                .map { SuggestedResource(url: $0.url, title: $0.title, reason: $0.reason, confidence: $0.confidence ?? 1.0) }
+        } catch {
+            NSLog("[AI] suggestResources error: %@", error.localizedDescription)
+            return nil
+        }
+    }
+
+    // MARK: - Distill
+
+    struct DistillItem: Sendable {
+        let index: Int
+        let title: String
+        let summary: String
+        let reason: String
+        let relation: String
+        let action: String
+    }
+
+    func distillCandidates(prompt: String) async -> [DistillItem]? {
+        guard let cfg = AIConfig.load() else { return nil }
+
+        struct ChatRequest: Encodable {
+            struct Message: Encodable { let role: String; let content: String }
+            let model: String
+            let messages: [Message]
+            let temperature: Double
+        }
+        struct ChatResponse: Decodable {
+            struct Choice: Decodable {
+                struct Message: Decodable { let content: String }
+                let message: Message
+            }
+            let choices: [Choice]
+        }
+        struct Item: Decodable {
+            let index: Int
+            let title: String?
+            let summary: String
+            let reason: String
+            let relation: String
+            let action: String
+        }
+
+        let body = ChatRequest(
+            model: cfg.model,
+            messages: [
+                .init(role: "system", content: "你是一个知识整理助手，只输出 JSON 数组。"),
+                .init(role: "user", content: prompt),
+            ],
+            temperature: 0.3
+        )
+        guard let payload = try? JSONEncoder().encode(body) else { return nil }
+
+        var request = URLRequest(url: cfg.apiURL, timeoutInterval: 25)
+        request.httpMethod = "POST"
+        request.httpBody = payload
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !cfg.apiKey.isEmpty {
+            request.setValue("Bearer \(cfg.apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let status = (response as? HTTPURLResponse)?.statusCode,
+                  (200...299).contains(status) else { return nil }
+            guard let decoded = try? JSONDecoder().decode(ChatResponse.self, from: data),
+                  let content = decoded.choices.first?.message.content else { return nil }
+
+            let cleaned = content
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: #"^```[a-z]*\n?"#, with: "", options: .regularExpression)
+                .replacingOccurrences(of: #"```$"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard let jsonData = cleaned.data(using: .utf8),
+                  let items = try? JSONDecoder().decode([Item].self, from: jsonData)
+            else { return nil }
+
+            return items.map {
+                DistillItem(
+                    index: $0.index,
+                    title: $0.title ?? "",
+                    summary: $0.summary,
+                    reason: $0.reason,
+                    relation: $0.relation,
+                    action: $0.action
+                )
+            }
+        } catch {
+            NSLog("[AI] distillCandidates error: %@", error.localizedDescription)
             return nil
         }
     }

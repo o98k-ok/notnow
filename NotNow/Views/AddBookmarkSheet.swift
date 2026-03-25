@@ -1072,6 +1072,11 @@ struct AddBookmarkSheet: View {
             kind: .bookmarkUpserted,
             bookmarkID: bookmark.id
         )
+        let savedBookmark = bookmark
+        let ctx = modelContext
+        Task { @MainActor in
+            await KnowledgeIndexService.shared.index(savedBookmark, context: ctx)
+        }
         dismiss()
     }
 

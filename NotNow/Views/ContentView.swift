@@ -71,6 +71,16 @@ struct ContentView: View {
     @State private var recommendationTotalBatches = 0
     @State private var recommendationFocusRequest = 0
     @State private var didRunInitialRecommendation = false
+    // MARK: - Explore state
+    @State private var explorePhase: ExplorePhase = .idle
+    @State private var exploreStatusText = ""
+    @State private var exploreRecalledBookmarks: [Bookmark] = []
+    @State private var exploreRecallReasons: [UUID: String] = [:]
+    @State private var exploreDistilledCandidates: [DistilledCandidate] = []
+    @State private var exploreSavedIDs: Set<UUID> = []
+    @State private var exploreSkippedIDs: Set<UUID> = []
+    @State private var exploreTask: Task<Void, Never>?
+    @State private var exploreSeedUsed = ""
     private let searchDebounceNanoseconds: UInt64 = 450_000_000
     private let sidebarCountsDebounceNanoseconds: UInt64 = 180_000_000
 
@@ -82,6 +92,8 @@ struct ContentView: View {
     }
 
     @State private var recommendationStage: RecommendationStage = .idle
+
+    private enum ExplorePhase { case idle, running, done }
 
     private struct BookmarkFetchResult {
         let bookmarks: [Bookmark]
@@ -212,6 +224,7 @@ struct ContentView: View {
             ensureFavoriteCategoryExists()
             cleanupPinnedCategoryIDs()
             refreshAll()
+            backgroundIndexUnindexedBookmarks()
         }
         .onChange(of: showCategorySheet) {
             if !showCategorySheet {
@@ -662,11 +675,52 @@ struct ContentView: View {
                 )
 
                 HStack(spacing: 10) {
-                    Label("自然语言推荐", systemImage: "sparkles")
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.textTertiary)
+                    // Status label: shows current mode
+                    if explorePhase != .idle {
+                        if explorePhase == .running {
+                            ProgressView().controlSize(.small)
+                            Text(exploreStatusText)
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.textTertiary)
+                        } else {
+                            Label("知识探索", systemImage: "sparkles.rectangle.stack")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.textTertiary)
+                        }
+                    } else if isRecommending {
+                        ProgressView().controlSize(.small)
+                        Text(recommendationProgressText.isEmpty ? "推荐中…" : recommendationProgressText)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.textTertiary)
+                    } else {
+                        Label("智能推荐", systemImage: "sparkles")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.textTertiary)
+                    }
                     Spacer()
+                    // Explore: only show after recommend results exist
+                    if !recommendedBookmarks.isEmpty && explorePhase == .idle && !isRecommending {
+                        Button { startExplorePipeline() } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.trianglehead.branch")
+                                Text("继续探索")
+                            }
+                            .ghostButtonStyle()
+                        }
+                        .buttonStyle(.notNowPlainInteractive)
+                    }
+                    if explorePhase != .idle {
+                        Button { clearExplore() } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.trianglehead.clockwise")
+                                Text("返回推荐")
+                            }
+                            .ghostButtonStyle()
+                        }
+                        .buttonStyle(.notNowPlainInteractive)
+                    }
                     Button {
+                        clearExplore()
                         didRunInitialRecommendation = true
                         refreshRecommendations()
                     } label: {
@@ -681,7 +735,7 @@ struct ContentView: View {
                         .ghostButtonStyle()
                     }
                     .buttonStyle(.notNowPlainInteractive)
-                    .disabled(isRecommending)
+                    .disabled(isRecommending || explorePhase == .running)
                 }
             }
             .padding(16)
@@ -724,23 +778,86 @@ struct ContentView: View {
         return GeometryReader { _ in
             ZStack {
                 ScrollView {
-                    if recommendedBookmarks.isEmpty {
-                        recommendationEmptyState
-                    } else {
-                        let display = Array(recommendedBookmarks.prefix(recommendationDisplayLimit))
-
-                        VStack {
-                            LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
-                                ForEach(display, id: \.id) { bm in
-                                    bookmarkCell(for: bm)
+                    VStack(spacing: 0) {
+                        if explorePhase != .idle {
+                            // Explore mode: recall results + distilled candidates in unified grid
+                            if exploreRecalledBookmarks.isEmpty && exploreDistilledCandidates.isEmpty {
+                                if explorePhase == .running {
+                                    ProgressView()
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.top, 60)
+                                } else {
+                                    VStack(spacing: 12) {
+                                        Image(systemName: "magnifyingglass")
+                                            .font(.largeTitle)
+                                            .foregroundStyle(AppTheme.textTertiary)
+                                        Text("未找到相关内容")
+                                            .font(.subheadline)
+                                            .foregroundStyle(AppTheme.textTertiary)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.top, 60)
                                 }
+                            } else {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    if !exploreRecalledBookmarks.isEmpty {
+                                        Label("已有知识匹配", systemImage: "books.vertical")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(AppTheme.textSecondary)
+                                            .padding(.horizontal, 22)
+                                            .padding(.bottom, 10)
+                                        LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                                            ForEach(exploreRecalledBookmarks, id: \.id) { bm in
+                                                bookmarkCell(for: bm)
+                                            }
+                                        }
+                                        .frame(maxWidth: 1460, alignment: .topLeading)
+                                        .padding(.horizontal, 22)
+                                        .padding(.bottom, 14)
+                                    }
+                                    if !exploreDistilledCandidates.isEmpty {
+                                        let visible = exploreDistilledCandidates.filter { !exploreSkippedIDs.contains($0.id) }
+                                        if !visible.isEmpty {
+                                            Label("探索候选内容", systemImage: "arrow.trianglehead.branch")
+                                                .font(.caption.weight(.semibold))
+                                                .foregroundStyle(AppTheme.textSecondary)
+                                                .padding(.horizontal, 22)
+                                                .padding(.top, exploreRecalledBookmarks.isEmpty ? 0 : 8)
+                                                .padding(.bottom, 10)
+                                            LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                                                ForEach(visible) { candidate in
+                                                    exploreCardCell(candidate)
+                                                }
+                                            }
+                                            .frame(maxWidth: 1460, alignment: .topLeading)
+                                            .padding(.horizontal, 22)
+                                            .padding(.bottom, 14)
+                                        }
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
                             }
-                            .frame(maxWidth: 1460, alignment: .topLeading)
+                        } else {
+                            // Recommend mode
+                            if recommendedBookmarks.isEmpty {
+                                recommendationEmptyState
+                            } else {
+                                let display = Array(recommendedBookmarks.prefix(recommendationDisplayLimit))
+                                VStack {
+                                    LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                                        ForEach(display, id: \.id) { bm in
+                                            bookmarkCell(for: bm)
+                                        }
+                                    }
+                                    .frame(maxWidth: 1460, alignment: .topLeading)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .top)
+                                .padding(.horizontal, 22)
+                                .padding(.bottom, 8)
+                            }
                         }
-                        .frame(maxWidth: .infinity, alignment: .top)
-                        .padding(.horizontal, 22)
-                        .padding(.bottom, 8)
                     }
+                    .padding(.bottom, 24)
                 }
                 .scrollIndicators(.visible)
                 .allowsHitTesting(!shouldShowRecommendationPipeline)
@@ -755,6 +872,87 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func exploreCardCell(_ candidate: DistilledCandidate) -> some View {
+        let isSaved = exploreSavedIDs.contains(candidate.id)
+        VStack(alignment: .leading, spacing: 8) {
+            // Source tag
+            let (sourceLabel, sourceColor): (String, Color) = switch candidate.source {
+            case .outboundLink:  ("外链", Color.blue)
+            case .aiVerified:    ("AI 验证", Color.green)
+            case .aiHypothesis:  ("AI 推测", Color.orange)
+            }
+            HStack(spacing: 6) {
+                Text(sourceLabel)
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(sourceColor.opacity(0.12))
+                    .foregroundStyle(sourceColor)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                Spacer()
+                if isSaved {
+                    Label("已保存", systemImage: "checkmark.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                }
+            }
+            Text(candidate.title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(AppTheme.textPrimary)
+                .lineLimit(2)
+            if !candidate.summary.isEmpty {
+                Text(candidate.summary)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .lineLimit(3)
+            }
+            if !candidate.reason.isEmpty {
+                Text(candidate.reason)
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.textTertiary)
+                    .lineLimit(2)
+            }
+            Spacer()
+            if !isSaved {
+                HStack(spacing: 6) {
+                    Button { saveExploreCandidate(candidate) } label: {
+                        Text("保存").font(.caption).ghostButtonStyle()
+                    }
+                    .buttonStyle(.notNowPlainInteractive)
+                    Button { saveExploreCandidate(candidate, kind: .snippet) } label: {
+                        Text("存为片段").font(.caption).ghostButtonStyle()
+                    }
+                    .buttonStyle(.notNowPlainInteractive)
+                    Button { saveExploreCandidate(candidate, kind: .task) } label: {
+                        Text("存为任务").font(.caption).ghostButtonStyle()
+                    }
+                    .buttonStyle(.notNowPlainInteractive)
+                    Spacer()
+                    Button {
+                        exploreSkippedIDs.insert(candidate.id)
+                        if let seedID = candidate.seedBookmarkID {
+                            KnowledgeFeedbackService.shared.record(
+                                event: .skip, bookmarkID: seedID,
+                                queryContext: exploreSeedUsed, context: modelContext
+                            )
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.textTertiary)
+                    }
+                    .buttonStyle(.notNowPlainInteractive)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 140, alignment: .topLeading)
+        .background(AppTheme.bgCard)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppTheme.borderSubtle, lineWidth: 1))
     }
 
     private var recommendationEmptyState: some View {
@@ -1384,6 +1582,20 @@ struct ContentView: View {
         }
     }
 
+    private func backgroundIndexUnindexedBookmarks() {
+        let ctx = modelContext
+        Task { @MainActor in
+            let allDescriptor = FetchDescriptor<Bookmark>()
+            guard let allBookmarks = try? ctx.fetch(allDescriptor), !allBookmarks.isEmpty else { return }
+            let indexDescriptor = FetchDescriptor<KnowledgeIndex>()
+            let indexedIDs = Set((try? ctx.fetch(indexDescriptor))?.map { $0.bookmarkID } ?? [])
+            let unindexed = allBookmarks.filter { !indexedIDs.contains($0.id) }
+            guard !unindexed.isEmpty else { return }
+            NSLog("[KnowledgeIndex] background indexing %d unindexed bookmarks", unindexed.count)
+            await KnowledgeIndexService.shared.indexAll(unindexed, context: ctx)
+        }
+    }
+
     private func handleModelDataDidChange(_ notification: Notification) {
         let rawKind = notification.userInfo?[Notification.modelDataChangeKindKey] as? String
         let changeKind = ModelDataChangeKind(rawValue: rawKind ?? "") ?? .fullRefresh
@@ -1545,6 +1757,113 @@ struct ContentView: View {
         if bm.notes.localizedStandardContains(query) { return true }
         if bm.tags.contains(where: { $0.localizedStandardContains(query) }) { return true }
         return false
+    }
+
+    // MARK: - Explore Pipeline
+
+    private func startExplorePipeline() {
+        exploreTask?.cancel()
+        let seedValue = recommendationQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !seedValue.isEmpty else { return }
+
+        exploreRecalledBookmarks = []
+        exploreRecallReasons = [:]
+        exploreDistilledCandidates = []
+        exploreSavedIDs = []
+        exploreSkippedIDs = []
+        exploreSeedUsed = seedValue
+        explorePhase = .running
+        exploreStatusText = "召回中…"
+
+        let ctx = modelContext
+        let existingURLs = Set(bookmarks.map { $0.url.lowercased() })
+
+        exploreTask = Task {
+            var effectiveSeed = seedValue
+            if let u = URL(string: seedValue), u.scheme == "https" || u.scheme == "http" {
+                await MainActor.run { exploreStatusText = "读取页面内容…" }
+                let meta = await MetadataService.shared.fetch(from: seedValue, fetchImage: false)
+                let parts = [meta.title, meta.description].compactMap { $0 }.filter { !$0.isEmpty }
+                if !parts.isEmpty { effectiveSeed = parts.joined(separator: " ") + " " + seedValue }
+            }
+            guard !Task.isCancelled else { await MainActor.run { explorePhase = .idle }; return }
+
+            await MainActor.run { exploreStatusText = "召回中…" }
+            let recalled = await KnowledgeRecallService.shared.recall(
+                seed: effectiveSeed, context: ctx, maxResults: 20
+            )
+            guard !Task.isCancelled else { await MainActor.run { explorePhase = .idle }; return }
+
+            var recalledBookmarks: [Bookmark] = []
+            var reasons: [UUID: String] = [:]
+            for r in recalled {
+                let bid = r.bookmarkID
+                let desc = FetchDescriptor<Bookmark>(predicate: #Predicate { $0.id == bid })
+                if let bm = try? ctx.fetch(desc).first {
+                    recalledBookmarks.append(bm)
+                    reasons[bm.id] = r.reason
+                }
+            }
+            await MainActor.run {
+                exploreRecalledBookmarks = recalledBookmarks
+                exploreRecallReasons = reasons
+                exploreStatusText = "探索扩散中…"
+            }
+
+            let candidates = await KnowledgeExploreService.shared.explore(
+                from: recalled, seed: effectiveSeed,
+                existingURLs: existingURLs, maxPerType: 5
+            )
+            guard !Task.isCancelled else { await MainActor.run { explorePhase = .idle }; return }
+            await MainActor.run { exploreStatusText = "提炼中…" }
+
+            let distilled = await KnowledgeDistillService.shared.distill(
+                candidates: candidates, recallContext: recalled
+            )
+            guard !Task.isCancelled else { await MainActor.run { explorePhase = .idle }; return }
+
+            await MainActor.run {
+                exploreDistilledCandidates = distilled
+                explorePhase = .done
+                exploreStatusText = ""
+            }
+        }
+    }
+
+    private func clearExplore() {
+        exploreTask?.cancel()
+        explorePhase = .idle
+        exploreStatusText = ""
+        exploreRecalledBookmarks = []
+        exploreRecallReasons = [:]
+        exploreDistilledCandidates = []
+        exploreSavedIDs = []
+        exploreSkippedIDs = []
+        exploreSeedUsed = ""
+    }
+
+    private func saveExploreCandidate(_ candidate: DistilledCandidate, kind: BookmarkKind = .link) {
+        guard !exploreSavedIDs.contains(candidate.id) else { return }
+        let bookmark = Bookmark(url: candidate.url, title: candidate.title, desc: candidate.summary)
+        bookmark.bookmarkKind = kind
+        if kind == .snippet { bookmark.snippetContent = candidate.summary }
+        modelContext.insert(bookmark)
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.delete(bookmark)
+            return
+        }
+        exploreSavedIDs.insert(candidate.id)
+        Task { await KnowledgeIndexService.shared.index(bookmark, context: modelContext) }
+        // Record feedback on seed bookmark if this candidate came from one
+        if let seedID = candidate.seedBookmarkID {
+            let eventType: KnowledgeEventType = kind == .snippet ? .createSnippet : (kind == .task ? .createTask : .save)
+            KnowledgeFeedbackService.shared.record(
+                event: eventType, bookmarkID: seedID,
+                queryContext: exploreSeedUsed, context: modelContext
+            )
+        }
     }
 
     private func refreshRecommendations() {
@@ -2030,6 +2349,13 @@ struct ContentView: View {
                         importAlertMessage = "已恢复 \(stats.bookmarksCreated) 条书签、\(stats.categoriesCreated) 个分类。\(stats.configRestored ? "配置已恢复。" : "")"
                         showImportAlert = true
                         refreshAll()
+                        let ctx = modelContext
+                        Task { @MainActor in
+                            let descriptor = FetchDescriptor<Bookmark>()
+                            if let all = try? ctx.fetch(descriptor) {
+                                await KnowledgeIndexService.shared.indexAll(all, context: ctx)
+                            }
+                        }
                     case .failure(let err):
                         let msg: String
                         if case .readFailed(let s) = err { msg = s }
