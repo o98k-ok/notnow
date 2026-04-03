@@ -23,6 +23,14 @@ const DEFAULT_MAX_RESULTS = 200;
 const MAX_FETCH_LIMIT = 2000;
 const APPLE_REF_UNIX_OFFSET_SECONDS = 978307200;
 const SEARCH_DEBOUNCE_MS = 180;
+const TAG_DECODER_CACHE_DIR = path.join(
+  os.homedir(),
+  ".cache",
+  "notnow-raycast",
+);
+const TAG_DECODER_BIN = path.join(TAG_DECODER_CACHE_DIR, "decode_tags");
+
+let compiledBinaryReady: Promise<string> | null = null;
 
 type BookmarkKind = "link" | "snippet" | "task" | "api";
 
@@ -169,32 +177,18 @@ export default function Command() {
       const sqlRows = await queryRows({
         storePath: resolvedStorePath,
         query: searchText.trim(),
-        fetchLimit: Math.min(MAX_FETCH_LIMIT, Math.max(maxResults * 4, 200)),
+        kindFilter: kindFilter !== "all" ? kindFilter : undefined,
+        fetchLimit: Math.min(MAX_FETCH_LIMIT, Math.max(maxResults * 2, 200)),
       });
-      const hydrated = await hydrateResults(sqlRows);
-      const query = searchText.trim().toLowerCase();
-      const kindFiltered =
-        kindFilter !== "all"
-          ? hydrated.filter((r) => r.kind === kindFilter)
-          : hydrated;
-      const textFiltered = query
-        ? kindFiltered.filter(
-            (r) =>
-              r.url.toLowerCase().includes(query) ||
-              r.title.toLowerCase().includes(query) ||
-              r.desc.toLowerCase().includes(query) ||
-              r.kind.toLowerCase().includes(query) ||
-              r.category.toLowerCase().includes(query) ||
-              r.tags.some((t) => t.toLowerCase().includes(query)),
-          )
-        : kindFiltered;
-      const sorted = sortAndFilter(textFiltered, showXDomain).slice(
-        0,
-        maxResults,
-      );
+      // Phase 1: hydrate without tags (no subprocess needed)
+      const hydrated = hydrateResultsWithoutTags(sqlRows);
+      const sorted = sortAndFilter(hydrated, showXDomain).slice(0, maxResults);
+
+      // Phase 2: decode tags only for the final visible slice
+      const withTags = await fillTags(sorted, sqlRows);
 
       if (serial !== requestSerial.current) return;
-      setResults(sorted);
+      setResults(withTags);
     } catch (error) {
       if (serial !== requestSerial.current) return;
       const message = error instanceof Error ? error.message : "Unknown error";
@@ -231,7 +225,7 @@ export default function Command() {
       filtering={false}
       throttle
       onSearchTextChange={setSearchText}
-      searchBarPlaceholder="Search by name, URL, desc, tags..."
+      searchBarPlaceholder="Search by name, URL, desc..."
       searchBarAccessory={
         <List.Dropdown
           tooltip="Filter by Kind"
@@ -573,26 +567,8 @@ function sortAndFilter(
   });
 }
 
-async function hydrateResults(rows: SQLiteRow[]): Promise<SearchResult[]> {
-  const uniqueHex = [
-    ...new Set(
-      rows.map((row) => String(row.tags_blob_hex || "").trim()).filter(Boolean),
-    ),
-  ];
-  const missingHex = uniqueHex.filter((hex) => !tagDecodeCache.has(hex));
-  if (missingHex.length > 0) {
-    const decoded = await decodeTagsBatch(missingHex);
-    for (const [hex, tags] of decoded.entries()) {
-      tagDecodeCache.set(hex, tags);
-    }
-    for (const hex of missingHex) {
-      if (!tagDecodeCache.has(hex)) tagDecodeCache.set(hex, []);
-    }
-  }
-
+function hydrateResultsWithoutTags(rows: SQLiteRow[]): SearchResult[] {
   return rows.map((row) => {
-    const tagsHex = String(row.tags_blob_hex || "").trim();
-    const tags = tagsHex ? (tagDecodeCache.get(tagsHex) ?? []) : [];
     const kind = normalizeKind(String(row.kind));
     return {
       id: String(row.id),
@@ -601,7 +577,7 @@ async function hydrateResults(rows: SQLiteRow[]): Promise<SearchResult[]> {
       kind,
       category: String(row.category || "Uncategorized"),
       desc: String(row.desc || ""),
-      tags,
+      tags: [],
       snippetContent: String(row.snippet_content || ""),
       apiMethod: String(row.api_method || ""),
       apiQueryParams: String(row.api_query_params || ""),
@@ -613,29 +589,81 @@ async function hydrateResults(rows: SQLiteRow[]): Promise<SearchResult[]> {
   });
 }
 
+async function fillTags(
+  results: SearchResult[],
+  sqlRows: SQLiteRow[],
+): Promise<SearchResult[]> {
+  const idToHex = new Map<string, string>();
+  for (const row of sqlRows) {
+    const hex = String(row.tags_blob_hex || "").trim();
+    if (hex) idToHex.set(String(row.id), hex);
+  }
+
+  const neededHex = new Set<string>();
+  for (const r of results) {
+    const hex = idToHex.get(r.id);
+    if (hex && !tagDecodeCache.has(hex)) neededHex.add(hex);
+  }
+
+  if (neededHex.size > 0) {
+    const decoded = await decodeTagsBatch([...neededHex]);
+    for (const [hex, tags] of decoded.entries()) {
+      tagDecodeCache.set(hex, tags);
+    }
+    for (const hex of neededHex) {
+      if (!tagDecodeCache.has(hex)) tagDecodeCache.set(hex, []);
+    }
+  }
+
+  return results.map((r) => {
+    const hex = idToHex.get(r.id);
+    const tags = hex ? (tagDecodeCache.get(hex) ?? []) : [];
+    return tags.length > 0 ? { ...r, tags } : r;
+  });
+}
+
+async function ensureCompiledDecoder(): Promise<string> {
+  if (compiledBinaryReady) return compiledBinaryReady;
+
+  compiledBinaryReady = (async () => {
+    try {
+      await fs.access(TAG_DECODER_BIN);
+      return TAG_DECODER_BIN;
+    } catch {
+      // Binary doesn't exist yet — compile it
+    }
+    await fs.mkdir(TAG_DECODER_CACHE_DIR, { recursive: true });
+    const srcPath = path.join(TAG_DECODER_CACHE_DIR, "decode_tags.swift");
+    await fs.writeFile(srcPath, SWIFT_TAG_DECODER, "utf8");
+    await execFileAsync("swiftc", ["-O", "-o", TAG_DECODER_BIN, srcPath], {
+      timeout: 30_000,
+    });
+    return TAG_DECODER_BIN;
+  })();
+
+  // If compilation fails, reset so we can retry next time
+  compiledBinaryReady.catch(() => {
+    compiledBinaryReady = null;
+  });
+
+  return compiledBinaryReady;
+}
+
 async function decodeTagsBatch(
   hexList: string[],
 ): Promise<Map<string, string[]>> {
   const output = new Map<string, string[]>();
   if (hexList.length === 0) return output;
 
+  const binPath = await ensureCompiledDecoder();
   const tempDir = await fs.mkdtemp(
     path.join(os.tmpdir(), "notnow-tag-decode-"),
   );
-  const scriptPath = path.join(tempDir, "decode_tags.swift");
   const inputPath = path.join(tempDir, "input.json");
-  const moduleCachePath = path.join(tempDir, "module-cache");
 
   try {
-    await fs.writeFile(scriptPath, SWIFT_TAG_DECODER, "utf8");
     await fs.writeFile(inputPath, JSON.stringify(hexList), "utf8");
-
-    const { stdout } = await execFileAsync("swift", [scriptPath, inputPath], {
-      env: {
-        ...process.env,
-        SWIFT_MODULECACHE_PATH: moduleCachePath,
-        CLANG_MODULE_CACHE_PATH: moduleCachePath,
-      },
+    const { stdout } = await execFileAsync(binPath, [inputPath], {
       maxBuffer: 4 * 1024 * 1024,
     });
 
@@ -670,16 +698,28 @@ function escapeLike(input: string): string {
 async function queryRows(params: {
   storePath: string;
   query: string;
+  kindFilter?: string;
   fetchLimit: number;
 }): Promise<SQLiteRow[]> {
-  const whereClause =
-    params.query.length > 0
-      ? `(lower(COALESCE(b.ZURL, '')) LIKE lower('%${escapeLike(params.query)}%') ESCAPE '\\'
-         OR lower(COALESCE(b.ZTITLE, '')) LIKE lower('%${escapeLike(params.query)}%') ESCAPE '\\'
-         OR lower(COALESCE(b.ZDESC, '')) LIKE lower('%${escapeLike(params.query)}%') ESCAPE '\\'
-         OR lower(COALESCE(b.ZKIND, '')) LIKE lower('%${escapeLike(params.query)}%') ESCAPE '\\'
-         OR lower(COALESCE(c.ZNAME, '')) LIKE lower('%${escapeLike(params.query)}%') ESCAPE '\\')`
-      : "1=1";
+  const conditions: string[] = [];
+
+  if (params.query.length > 0) {
+    const escaped = escapeLike(params.query);
+    conditions.push(
+      `(lower(COALESCE(b.ZURL, '')) LIKE lower('%${escaped}%') ESCAPE '\\'
+         OR lower(COALESCE(b.ZTITLE, '')) LIKE lower('%${escaped}%') ESCAPE '\\'
+         OR lower(COALESCE(b.ZDESC, '')) LIKE lower('%${escaped}%') ESCAPE '\\'
+         OR lower(COALESCE(c.ZNAME, '')) LIKE lower('%${escaped}%') ESCAPE '\\')`,
+    );
+  }
+
+  if (params.kindFilter) {
+    conditions.push(
+      `lower(COALESCE(b.ZKIND, 'link')) = '${escapeLike(params.kindFilter)}'`,
+    );
+  }
+
+  const whereClause = conditions.length > 0 ? conditions.join(" AND ") : "1=1";
 
   const sql = `
 SELECT
