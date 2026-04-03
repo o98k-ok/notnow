@@ -48,3 +48,4 @@
 | 2026-03-08 | 10:58 | working-tree | `./build.sh` | success | 修复默认浏览器选中逻辑：自动检测第一个有 Profile 的浏览器；收窄文案避免误导"多浏览器同时导入"。 |
 | 2026-03-08 | 17:17 | working-tree | `./build.sh` | failed | 沙箱权限限制导致归档失败：无法写入 Xcode DerivedData / Archive 中间产物目录。 |
 | 2026-03-08 | 17:26 | working-tree | `./build.sh` | success | 提权后归档通过，产物输出到 `build/export/NotNow.app`。 |
+| 2026-04-03 | 14:46 | a85dbe7 | `./build.sh` | success | Raycast search: cache tag decoder binary; placeholder matches behavior。 |
